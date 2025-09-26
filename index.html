@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+    <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/vite.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Tokenizer Lab</title>
+    <!-- Noto fonts for better multilingual text rendering -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Noto+Sans:wght@400;700&family=Noto+Sans+Devanagari:wght@400;700&family=Noto+Sans+Kannada:wght@400;700&display=swap" rel="stylesheet">
+    <style>
+      :root { color-scheme: dark; }
+      body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Inter,Roboto,Arial;background:#0b0b0c;color:#eaeaea}
+      .wrap{max-width:950px;margin:0 auto;padding:20px}
+      textarea{width:100%;min-height:140px;background:#0f0f13;color:#eaeaea;border:1px solid #282830;border-radius:8px;padding:12px;font-size:14px}
+      button{background:#1a1a22;border:1px solid #2a2a33;color:#eaeaea;border-radius:8px;padding:8px 12px;cursor:pointer;margin-top:10px}
+      .tokens{display:flex;flex-wrap:wrap;gap:6px;margin-top:12px}
+      .t{background:#16161c;border:1px dashed #2a2a33;padding:4px 6px;border-radius:6px;font-family:ui-monospace,Consolas,Menlo,monospace;font-size:12px}
+      .results{margin-top:20px}
+      .metrics{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;margin:16px 0}
+      .metric{background:#16161c;border:1px solid #2a2a33;padding:8px 12px;border-radius:8px;text-align:left}
+      .label{color:#888;font-size:12px;margin-bottom:4px;display:block}
+      .value{color:#eaeaea;font-size:16px;font-weight:500}
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+
+    <!-- ✅ Load Transformers.js from jsDelivr CDN -->
+    <script type="module">
+      import { env, AutoTokenizer } from "https://cdn.jsdelivr.net/npm/@xenova/transformers@2.17.2/dist/transformers.min.js";
+
+      // Always fetch from the Hub (avoid localhost), cache in the browser
+      env.allowLocalModels = false;
+      env.allowRemoteModels = true;
+      env.useBrowserCache = true;
+
+      // Expose to the app (including env so we can set auth tokens)
+      window.hf = { env, AutoTokenizer };
+
+      // Add a fetch interceptor to attach Authorization header for Hugging Face resources
+      // This ensures gated model files requested via /resolve also receive the bearer token
+      const originalFetch = window.fetch.bind(window);
+      window.fetch = (input, init = {}) => {
+        try {
+          const url = typeof input === 'string' ? input : input?.url;
+          const isHF = !!url && /(^https?:\/\/)?([\w.-]+\.)?(huggingface\.co|cdn-lfs\.huggingface\.co)\//.test(url);
+          const token = window.hf?.env?.accessToken;
+          if (isHF && token) {
+            const headers = new Headers(init?.headers || (typeof input !== 'string' && input?.headers) || {});
+            if (!headers.has('Authorization')) {
+              headers.set('Authorization', `Bearer ${token}`);
+            }
+            init = { ...(init || {}), headers };
+          }
+        } catch (e) {
+          // silently ignore interceptor errors and fall back to default fetch
+        }
+        return originalFetch(input, init);
+      };
+    </script>
+
+    <!-- Your React app -->
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

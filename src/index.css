@@ -1,0 +1,75 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 210 30% 6%;
+    --foreground: 210 40% 98%;
+    --muted: 210 20% 18%;
+    --muted-foreground: 210 15% 70%;
+    --popover: 210 45% 8%;
+    --popover-foreground: 210 40% 98%;
+    --card: 210 35% 8%;
+    --card-foreground: 210 40% 98%;
+    --border: 220 15% 20%;
+    --input: 220 15% 20%;
+    --primary: 215 92% 62%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 220 16% 22%;
+    --secondary-foreground: 210 40% 96%;
+    --accent: 167 84% 65%;
+    --accent-foreground: 210 40% 8%;
+    --destructive: 0 84% 60%;
+    --destructive-foreground: 210 40% 98%;
+    --ring: 216 100% 70%;
+    --radius: 0.75rem;
+    --font-sans: "Inter", "Noto Sans", "Noto Sans Devanagari", "Noto Sans Kannada", system-ui, sans-serif;
+  }
+
+  .dark {
+    --background: 0 0% 100%;
+    --foreground: 210 35% 10%;
+    --muted: 210 20% 95%;
+    --muted-foreground: 215 15% 40%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 215 25% 15%;
+    --card: 0 0% 100%;
+    --card-foreground: 215 25% 15%;
+    --border: 214 32% 91%;
+    --input: 214 32% 91%;
+    --primary: 226 71% 40%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 220 14% 96%;
+    --secondary-foreground: 215 15% 25%;
+    --accent: 167 84% 30%;
+    --accent-foreground: 0 0% 98%;
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 210 35% 98%;
+    --ring: 217 100% 70%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply min-h-screen bg-background font-sans text-sm text-foreground antialiased selection:bg-primary/25 selection:text-primary;
+    background: radial-gradient(circle at 20% 15%, hsl(var(--primary) / 0.18), transparent 55%),
+      radial-gradient(circle at 80% 20%, hsl(var(--accent) / 0.18), transparent 60%),
+      radial-gradient(circle at 75% 85%, hsl(var(--primary) / 0.10), transparent 55%),
+      linear-gradient(to bottom, hsl(var(--background)) 0%, hsl(var(--background)) 100%);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    body {
+      background: linear-gradient(to bottom right, hsl(var(--background)), hsl(var(--background)) 60%, hsl(var(--muted) / 0.25));
+    }
+  }
+
+  a {
+    @apply font-medium text-primary underline-offset-4 hover:underline;
+  }
+}
