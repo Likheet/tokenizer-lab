@@ -1,6 +1,6 @@
-import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react'
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { KeyboardEvent } from 'react'
-import { Download, Eye, EyeOff, Loader2, Sparkles, ChevronsUpDown, Square, GitCompare, ListTree } from 'lucide-react'
+import { Download, Eye, EyeOff, Loader2, Sparkles, ChevronsUpDown, Square, GitCompare, ListTree, Wand2 } from 'lucide-react'
 
 import { ModeToggle } from './components/ui/theme-toggle'
 
@@ -26,6 +26,12 @@ import {
 } from './components/ui/select'
 import { ScrollArea } from './components/ui/scroll-area'
 import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger
+} from './components/ui/dropdown-menu'
+import {
   Table,
   TableBody,
   TableCell,
@@ -38,6 +44,8 @@ import {
 import { cn } from './lib/utils'
 import { ButtonGroup } from './components/ui/button-group'
 import { Textarea } from './components/ui/textarea'
+import { Slider } from './components/ui/slider'
+import { Switch } from './components/ui/switch'
 import {
   AVAILABLE_MODELS,
   getHfTokenId,
@@ -113,6 +121,201 @@ const METRIC_FIELDS: {
   }
 ]
 
+type SampleLanguage = 'hindi' | 'hinglish' | 'kannada' | 'english' | 'mixed'
+type SampleLength = 'small' | 'medium' | 'long'
+
+const SAMPLE_LANGUAGE_OPTIONS: { value: SampleLanguage; label: string }[] = [
+  { value: 'hindi', label: 'Hindi' },
+  { value: 'hinglish', label: 'Hinglish' },
+  { value: 'kannada', label: 'Kannada' },
+  { value: 'english', label: 'English' },
+  { value: 'mixed', label: 'Mixed' }
+]
+
+const SAMPLE_LENGTH_ORDER: SampleLength[] = ['small', 'medium', 'long']
+const SAMPLE_LENGTH_LABELS: Record<SampleLength, string> = {
+  small: 'Short',
+  medium: 'Medium',
+  long: 'Long'
+}
+
+const SAMPLE_SNIPPETS: Record<SampleLanguage, Record<SampleLength, string[]>> = {
+  hindi: {
+    small: [
+      'आज बाजार में आम की बहार है।',
+      'कृपया कल की मीटिंग समय पर शुरू करें।',
+      'यह किताब मुझे बहुत प्रेरणा देती है।',
+      'दिल्ली की सर्दियाँ कुछ खास होती हैं।',
+      'बचपन की यादें आज भी ताज़ा हैं।'
+    ],
+    medium: [
+      'आज सुबह की मेट्रो यात्रा ने शहर की बदलती रफ्तार का एहसास कराया।',
+      'नए नीति दस्तावेज़ से उम्मीद है कि छोटे व्यवसायों को राहत मिलेगी।',
+      'कैंटीन की गरम जलेबी और चाय ने पूरे ऑफिस को खुश कर दिया।',
+      'गली के मोड़ पर बैठा बांसुरी वाला बच्चे को पुराने राग सुना रहा था।',
+      'परिवार के साथ शाम की छत पर बैठकी ने पूरे दिन की थकान दूर कर दी।'
+    ],
+    long: [
+      'पिछले हफ्ते की बरसात के बाद आज की हल्की धूप ने पूरे मोहल्ले को बाहर निकाल दिया, और लोग चाय की चुस्कियों के साथ पुरानी कहानियाँ याद कर रहे थे।',
+      'रात की शांति में बैठकर उसने अपने शोध-पत्र की अंतिम पंक्तियाँ लिखीं, और अचानक उसे लगा कि वर्षों की मेहनत अब फल देने वाली है।',
+      'दादी ने रसोई में बैठकर आलू के परांठों की खुशबू से घर भर दिया, जबकि बच्चे छत पर पतंगें उड़ाने की जिद कर रहे थे।',
+      'हल्की बारिश, धीमी ट्रैफिक और रेडियो पर बजती पुरानी गज़ल ने लंबी ड्राइव को भी सुखद बना दिया।',
+      'शहर के कोने में बने छोटे पुस्तक मेले में भाषा, साहित्य और विज्ञान के स्टॉल ने हर उम्र के पाठकों को मोहित कर लिया।'
+    ]
+  },
+  hinglish: {
+    small: [
+      'Kal office mein bahut hustle tha!',
+      'Aaj dinner ke liye kya plan hai?',
+      'Mumbai ka traffic seriously wild hai yaar.',
+      'Thoda sa break lete hain, chai peete hain.',
+      'Weekend vibes already aa gaye 😄'
+    ],
+    medium: [
+      'Gym ke baad ek garam filter coffee ne pura mood set kar diya.',
+      'Client call pe strategy lock ho gayi, ab pitch deck polish karna hai.',
+      'Ye naya coworking space itna cozy hai ki code likhte waqt time ka pata hi nahi chalta.',
+      'Kal raat ki drive pe lo-fi baj rahi thi aur Bangalore ka skyline dreamy lag raha tha.',
+      'Team standup mein sabne apni wins share ki, energy full on high thi.'
+    ],
+    long: [
+      'Sunday ko Indiranagar ke rooftop cafe mein बैठकर हमने अगले quarter ke product roadmap pe detailed brainstorm kiya, aur end mein sab ne pani puri challenge bhi kiya.',
+      'Goa trip wali playlist lagate hi purane roadtrip ke saare throwback moments yaad aa gaye, aur humne decide kiya ki iss baar vlog bhi shoot karenge.',
+      'Kal ki drizzle aur neon lights ne late night coding session ko itna cinematic feel de diya ki github commits likhte waqt bhi smile aa rahi thi.',
+      'Shaam ko parents ke saath video call pe poore hafte ka update diya, phir cousins ke saath Among Us ke chaos ne pura stress hila diya.',
+      'Festival season start होते ही housing society mein rangoli workshops, taco stalls aur live acoustic sets ka combo literally lit ho gaya.'
+    ]
+  },
+  kannada: {
+    small: [
+      'ಇಂದು ಬೆಂಗಳೂರಿನಲ್ಲಿ ತುಂತುರು ಮಳೆ ಬಿದ್ದಿತು.',
+      'ನಾಳೆ ಬೆಳಿಗ್ಗೆ ಸಭೆ ಸಮಯಕ್ಕೆ ಆರಂಭವಾಗಲಿ.',
+      'ಈ ಹಾಡು ಕೇಳಿದ್ರೆ ಮನಸು ಸಂತೋಷವಾಗುತ್ತೆ.',
+      'ಮೈಸೂರಿನ ದಸರಾ ಜಾತ್ರೆ ಬಹಳ ಪ್ರಸಿದ್ಧ.',
+      'ಕಾಫಿ ಕೂಡಿದರೆ ಕೆಲಸಕ್ಕೂ ಜೋಶ್ ಬರುತ್ತದೆ.'
+    ],
+    medium: [
+      'ಬೆಂಗಳೂರು ಸಂಜೆ ಗಾಳಿ ಮತ್ತು ಬಿಸಿ ಬೋಂಡಾ ಜೋಡಿ ಅದೆಂತಾ ಸವಿ.',
+      'ಸ್ನೇಹಿತರೊಂದಿಗೆ ನಂದಿಹಳ್ಳಿಯ ಟ್ರೆಕ್ ಒಂದು ಅದ್ಭುತ ಅನುಭವ ನೀಡಿತು.',
+      'ಊಟದ ಮೇಲೆ ಅವರೆಕಾಳು ಸಾರು ಮತ್ತು ನೆಮ್ಮದಿಯ ಜತೆಯೂ ಸೇರಿತ್ತು.',
+      'ಮಕ್ಕಳು ತರಗತಿಯಲ್ಲಿ ಕವನ ವಾಚನ ಮಾಡಿದಾಗ ಶಿಕ್ಷಕರು ತುಂಬ ಸಂತೋಷಪಟ್ಟರು.',
+      'ಉದ್ಯಾನದಲ್ಲಿ ನಡೆಯುವಾಗ ಪಕ್ಕದ ಫೌಂಟನ್ ಶಬ್ದ ಮನಸ್ಸಿಗೆ ಶಾಂತಿ ನೀಡಿತು.'
+    ],
+    long: [
+      'ಶನಿವಾರ ರಾತ್ರಿ ಮಾರುಕಟ್ಟೆಗೆ ಹೋದಾಗ ಹಬ್ಬದ ಬೆಳಕು, ಬಣ್ಣದ ಹೊದಿಕೆ ಮತ್ತು ಸಂಗೀತ ಎಲ್ಲವೂ ಸೇರಿ ಒಂದು ಜಾತ್ರೆಯಂತಾಗಿತ್ತು.',
+      'ಪತ್ರಿಕೆಯ ಸಂಪಾದಕೀಯ ಓದಿದ ನಂತರ ಅವರು ತನ್ನ ಗ್ರಾಮದಲ್ಲಿಯೇ ಓದುಗರ ಕ್ಲಬ್ ಆರಂಭಿಸಲು ತೀರ್ಮಾನಿಸಿದರು.',
+      'ಮಲೆನಾಡಿನ ಮಂಜು, ಕಾಫಿ ತೋಟಗಳ ಪರಿಮಳ ಮತ್ತು ಹತ್ತಿರದ ಹರಿವಿನ ಸದ್ದು ಒಟ್ಟಿಗೆ ಪ್ರತಿ ಯಾತ್ರಿಕರ ಮನಸ್ಸು ಕದ್ದುಕೊಳ್ಳುತ್ತವೆ.',
+      'ಪರೀಕ್ಷೆಯ ಒತ್ತಡ ಮುಗಿದ ನಂತರ ಕಾಲೇಜ್ ಸ್ನೇಹಿತರು ಸೇರಿ ಚಿತ್ರಮಂದಿರಕ್ಕೆ ಹೋಗಿ ನೀರುಜ್ಜಿದಂತೆ ನಕ್ಕರು.',
+      'ಹೊಸಾಗಿ ಉದ್ಘಾಟನೆಯಾದ ವಿಜ್ಞಾನ ಮೇಳದಲ್ಲಿ ವಿದ್ಯಾರ್ಥಿಗಳು ತಮ್ಮ ರೋಬೋಟಿಕ್ಸ್ ಯೋಜನೆಗಳನ್ನು ಹೆಮ್ಮೆಗಾಗಿ ಪ್ರದರ್ಶಿಸಿದರು.'
+    ]
+  },
+  english: {
+    small: [
+      'The monsoon clouds rolled in with quiet drama.',
+      'Tokenizers can make or break downstream tasks.',
+      'She brewed a fresh cup of filter coffee and smiled.',
+      'Benchmarks tell only part of the story.',
+      'Every dataset has a hidden personality waiting to be explored.'
+    ],
+    medium: [
+      'Morning standups feel lighter when someone shares a tiny win.',
+      'The research paper argued that context windows reshape prompt design.',
+      'Late-night debugging with lo-fi beats is its own kind of meditation.',
+      'Walking past the lakeside, she drafted the keynote intro in her head.',
+      'The design sprint ended with sticky notes covering every inch of the wall.'
+    ],
+    long: [
+      'After hours of pair programming, the team finally watched the benchmark dashboard turn green and celebrated with impromptu samosas.',
+      'The city library opened a new AI corner where students could tinker with datasets, ask questions, and leave sticky notes filled with dream projects.',
+      'A warm summer storm rolled over the studio as the band layered synths, field recordings, and whispered vocals into their final track.',
+      'She drafted a detailed blog post on tokenizer quirks, weaving in case studies, code snippets, and a gentle push for better evaluation metrics.',
+      'In the middle of the hackathon night shift, someone brewed masala chai, and suddenly the whole room felt alive with ideas again.'
+    ]
+  },
+  mixed: {
+    small: [
+      'Aaj 7:30 PM @ Indiranagar? Let’s grab dosas! 😋',
+      'The report is ready—बस थोडा cleanup बाकी है.',
+      'Namma metro ride + podcast = perfect commute.',
+      'Pricing शुरू हो चुका है: Early bird ₹499 only.',
+      'Weekend plans set: trek + chai + coding jam.'
+    ],
+    medium: [
+      'Sprint wrap-up ke baad sabne terrace pe cutting chai share ki aur sunset literally golden tha.',
+      'Code review ke doraan usne Kannada mein explain kiya aur English diagrams se sab instantly samajh gaye.',
+      'Naye Kannada podcast ki playlist bana ke usne roomie ke saath long drive plan kiya.',
+      'Product launch se pehle social captions Hindi, English aur emojis mix karke schedule ho gaye.',
+      'Office foosball tournament mein Hinglish taunts aur cheering ne pura floor energize kar diya.'
+    ],
+    long: [
+      'Morning commute mein metro announcements Kannada aur English dono mein sunke tourists bhi comfortable feel kar rahe the, aur humne insta story par pura vibe capture kiya.',
+      'Weekend hackathon mein team ne Hindi notes, English commits aur Kannada jokes ke mix se pure 24 ghante freshly motivated feel kiye.',
+      'Late-night brainstorming ke baad doodle board pe emojis, Hinglish quotes aur product sketches ka full collage tayar ho gaya.',
+      'Townhall ke baad sab log cafeteria mein milke biryani aur filter coffee ke saath next sprint ke ideas discuss karne lage.',
+      'Community meetup mein speaker ne Bengaluru tech scene, Delhi creator culture aur global AI trends ko ek saath weave kiya.'
+    ]
+  }
+}
+
+const LANGUAGE_EMOJI_POOL: Record<SampleLanguage, string[]> = {
+  hindi: ['🌞', '📚', '🎶', '🪔', '☕'],
+  hinglish: ['✨', '🛣️', '🎧', '🍜', '🤩'],
+  kannada: ['🌧️', '🏞️', '🎉', '☕', '🪕'],
+  english: ['🚀', '📈', '☕', '🎨', '🌆'],
+  mixed: ['🔥', '💡', '🌈', '🎯', '🥳']
+}
+
+function decorateWithEmojis(text: string, language: SampleLanguage): string {
+  const pool = LANGUAGE_EMOJI_POOL[language] ?? []
+  if (!pool.length) return text
+
+  const desired = text.length > 80 ? 2 : 1
+  const selections = new Set<string>()
+
+  while (selections.size < desired && selections.size < pool.length) {
+    const candidate = pool[Math.floor(Math.random() * pool.length)]
+    if (!text.includes(candidate)) {
+      selections.add(candidate)
+    } else if (selections.size + 1 >= pool.length) {
+      selections.add(candidate)
+    }
+  }
+
+  if (!selections.size) return text
+  return `${text} ${Array.from(selections).join(' ')}`.trim()
+}
+
+function resolveSamplePool(language: SampleLanguage, length: SampleLength): string[] {
+  const languageBank = SAMPLE_SNIPPETS[language]
+  const pool = languageBank?.[length]
+  if (pool && pool.length) return pool
+  const fallback = languageBank?.small
+  if (fallback && fallback.length) return fallback
+  return SAMPLE_SNIPPETS.english.small
+}
+
+function generateSample(
+  language: SampleLanguage,
+  variant: 'single' | 'batch' = 'single',
+  length: SampleLength = 'small',
+  withEmojis = false
+): string {
+  const pool = resolveSamplePool(language, length)
+  if (!pool.length) return ''
+
+  const pick = () => {
+    const base = pool[Math.floor(Math.random() * pool.length)]
+    return withEmojis ? decorateWithEmojis(base, language) : base
+  }
+
+  if (variant === 'batch') {
+    const lines = Array.from({ length: 5 }, () => pick())
+    return lines.join('\n')
+  }
+
+  return pick()
+}
+
 export default function App() {
   const [text, setText] = useState('आज धूप नहीं निकली है — aaj dhoop nahi nikli hai.')
   const [batchText, setBatchText] = useState(STARTER_DATASET)
@@ -125,6 +328,13 @@ export default function App() {
   const [loading, setLoading] = useState(false)
   const [batchLoading, setBatchLoading] = useState(false)
   const [compareLoading, setCompareLoading] = useState(false)
+  const [sampleLength, setSampleLength] = useState<SampleLength>('small')
+  const [sampleIncludeEmojis, setSampleIncludeEmojis] = useState(false)
+  const [lastSampleByTarget, setLastSampleByTarget] = useState<Record<'single' | 'compare' | 'batch', SampleLanguage | null>>({
+    single: null,
+    compare: null,
+    batch: null
+  })
   const [tokenView, setTokenView] = useState<TokenView>('human')
   const [hfToken, setHfToken] = useState(() => {
     if (typeof window === 'undefined') return ''
@@ -139,6 +349,95 @@ export default function App() {
   const [modelMenuHighlight, setModelMenuHighlight] = useState<string | null>(null)
   const modelButtonRefs = useRef<Record<string, HTMLButtonElement | null>>({})
   const flatModelIds = useMemo(() => AVAILABLE_MODELS.map((model) => model.id), [])
+
+  const handleSampleInsert = useCallback(
+    (
+      language: SampleLanguage,
+      target: 'single' | 'compare' | 'batch',
+      options?: { length?: SampleLength }
+    ) => {
+      const variant = target === 'batch' ? 'batch' : 'single'
+      const effectiveLength = options?.length ?? sampleLength
+      const sample = generateSample(language, variant, effectiveLength, sampleIncludeEmojis)
+      if (target === 'batch') {
+        setBatchText(sample)
+      } else if (target === 'compare') {
+        setText(sample)
+      } else {
+        setText(sample)
+      }
+      setLastSampleByTarget((prev) => ({ ...prev, [target]: language }))
+    },
+    [sampleIncludeEmojis, sampleLength, setBatchText, setLastSampleByTarget, setText]
+  )
+
+  const renderSampleControls = (target: 'single' | 'compare' | 'batch') => {
+    const sliderIndex = Math.max(0, SAMPLE_LENGTH_ORDER.indexOf(sampleLength))
+    const sliderLabel = SAMPLE_LENGTH_LABELS[sampleLength]
+    const lastLanguage = lastSampleByTarget[target]
+    const emojiToggleId = `emoji-toggle-${target}`
+    return (
+      <div className="absolute bottom-3 right-3 flex items-center gap-2">
+        <div className="flex items-center gap-2 rounded-lg border border-border/60 bg-background/95 px-2.5 py-1 shadow-sm">
+          <span className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Size</span>
+          <Slider
+            value={[sliderIndex]}
+            min={0}
+            max={SAMPLE_LENGTH_ORDER.length - 1}
+            step={1}
+            onValueChange={(value) => {
+              const nextIndex = value[0] ?? 0
+              const nextLength = SAMPLE_LENGTH_ORDER[nextIndex] ?? 'small'
+              if (nextLength !== sampleLength) {
+                setSampleLength(nextLength)
+                if (lastLanguage) {
+                  handleSampleInsert(lastLanguage, target, { length: nextLength })
+                }
+              }
+            }}
+            className="w-24"
+            aria-label="Sample length"
+          />
+          <span className="text-[11px] font-medium text-foreground">{sliderLabel}</span>
+        </div>
+        <div className="flex items-center gap-2 rounded-lg border border-border/60 bg-background/95 px-2.5 py-1 shadow-sm">
+          <Switch
+            id={emojiToggleId}
+            checked={sampleIncludeEmojis}
+            onCheckedChange={(checked) => setSampleIncludeEmojis(checked)}
+            aria-label="Toggle emoji augmentation"
+          />
+          <label
+            htmlFor={emojiToggleId}
+            className="flex items-center gap-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground"
+          >
+            <Sparkles className="h-3.5 w-3.5" /> Emoji
+          </label>
+        </div>
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="flex items-center gap-2 bg-background/90"
+              aria-label="Insert sample text"
+            >
+              <Wand2 className="h-4 w-4" />
+              <span className="text-xs font-semibold">Samples</span>
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end" className="min-w-[8rem]">
+            {SAMPLE_LANGUAGE_OPTIONS.map((option) => (
+              <DropdownMenuItem key={`${target}-sample-${option.value}`} onSelect={() => handleSampleInsert(option.value, target)}>
+                {option.label}
+              </DropdownMenuItem>
+            ))}
+          </DropdownMenuContent>
+        </DropdownMenu>
+      </div>
+    )
+  }
 
   useEffect(() => {
     if (typeof window === 'undefined') return
@@ -319,87 +618,9 @@ export default function App() {
       <div className="absolute inset-x-0 top-0 -z-20 h-[520px] bg-gradient-to-b from-background/20 via-background/70 to-background" />
       <div className="absolute inset-0 -z-10 backdrop-blur-[2px]" />
 
-      <header className="border-b border-border/60 bg-background/60 backdrop-blur">
-        <div className="container flex flex-col gap-7 py-12 lg:flex-row lg:items-center lg:justify-between">
-          <div className="absolute right-6 top-6">
-            <ModeToggle />
-          </div>
-          <div className="space-y-5">
-            <Badge variant="secondary" className="w-max gap-2.5 px-3 py-1.5 bg-secondary/60 text-secondary-foreground">
-              <Sparkles className="h-4.5 w-4.5" />
-              Tokenizer Lab
-            </Badge>
-            <div className="space-y-2">
-              <h1 className="text-3xl font-semibold tracking-tight sm:text-4xl md:text-5xl">
-                Multilingual tokenization workbench
-              </h1>
-              <p className="max-w-2xl text-base text-muted-foreground">
-                Explore how cutting-edge tokenizers behave on Indic and multilingual samples. Track metrics,
-                compare models, and export structured results in seconds.
-              </p>
-            </div>
-            {selectedModelInfo ? (
-              <div className="flex flex-wrap items-center gap-3 text-sm text-muted-foreground">
-                <Badge variant="outline" className="bg-background/60">
-                  {CATEGORY_LABELS[selectedModelInfo.category]}
-                </Badge>
-                <span>
-                  <span className="font-semibold text-foreground">{selectedModelInfo.name}</span>
-                  {selectedModelInfo.shortName && (
-                    <span className="text-muted-foreground"> · {selectedModelInfo.shortName}</span>
-                  )}
-                </span>
-              </div>
-            ) : null}
-          </div>
-
-          <Card className="max-w-sm bg-card/70 shadow-lg shadow-primary/10">
-            <CardHeader className="pb-3">
-              <CardTitle className="text-base">Hugging Face access token</CardTitle>
-              <CardDescription>
-                Stored locally in your browser. Required for gated models like Meta Llama 3 and Mistral.
-              </CardDescription>
-            </CardHeader>
-            <CardContent className="space-y-3">
-              <div className="space-y-2">
-                <Label htmlFor="hf-token" className="text-xs uppercase tracking-wide text-muted-foreground">
-                  Access token
-                </Label>
-                <div className="flex items-center gap-2">
-                  <Input
-                    id="hf-token"
-                    type={showToken ? 'text' : 'password'}
-                    value={hfToken}
-                    onChange={(event) => setHfToken(event.target.value)}
-                    placeholder="hf_..."
-                    className="bg-background/80"
-                  />
-                  <Button
-                    type="button"
-                    variant="outline"
-                    className="shrink-0"
-                    onClick={() => setShowToken((s) => !s)}
-                  >
-                    {showToken ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-                  </Button>
-                </div>
-              </div>
-              <p className="text-xs text-muted-foreground">
-                Need one? Visit{' '}
-                <a
-                  href="https://huggingface.co/settings/tokens"
-                  target="_blank"
-                  rel="noreferrer"
-                  className="font-medium text-primary"
-                >
-                  huggingface.co/settings/tokens
-                </a>{' '}
-                and create a <strong>read</strong>-only token. Currently cached token ID: {getHfTokenId() || '—'}
-              </p>
-            </CardContent>
-          </Card>
-        </div>
-      </header>
+      <div className="absolute right-6 top-6 z-40">
+        <ModeToggle />
+      </div>
 
       <main className="container space-y-10 py-12">
         <Card className="border border-border/70 bg-card/70 shadow-xl shadow-primary/5">
@@ -534,15 +755,24 @@ export default function App() {
           <CardContent className="space-y-7">
             {mode === 'single' && (
               <div className="space-y-5">
-                <Textarea
-                  value={text}
-                  onChange={(event) => setText(event.target.value)}
-                  placeholder="Paste or type the text you want to tokenize…"
-                  className="min-h-[160px] bg-background/70 p-4"
-                />
+                <div className="relative">
+                  <Textarea
+                    value={text}
+                    onChange={(event) => setText(event.target.value)}
+                    placeholder="Paste or type the text you want to tokenize…"
+                    className="min-h-[160px] bg-background/70 p-4"
+                  />
+                  {renderSampleControls('single')}
+                </div>
                 <div className="flex flex-wrap items-center gap-4">
                   <Button onClick={runSingle} disabled={loading} className="px-5 py-2.5 h-auto">
-                    {loading && <Loader2 className="mr-2.5 h-4.5 w-4.5 animate-spin" />}Tokenize sample
+                    {loading ? (
+                      <>
+                        <Loader2 className="mr-2.5 h-4.5 w-4.5 animate-spin" />Generating tokens…
+                      </>
+                    ) : (
+                      'Tokenize sample'
+                    )}
                   </Button>
                   <p className="text-xs text-muted-foreground">
                     Tokens are rendered with visible whitespace markers so you can track segmentation precisely.
@@ -552,28 +782,46 @@ export default function App() {
             )}
             {mode === 'compare' && (
               <div className="space-y-4">
-                <Textarea
-                  value={text}
-                  onChange={(event) => setText(event.target.value)}
-                  placeholder="Single snippet to compare across all tokenizers"
-                  className="min-h-[140px] bg-background/70"
-                />
+                <div className="relative">
+                  <Textarea
+                    value={text}
+                    onChange={(event) => setText(event.target.value)}
+                    placeholder="Single snippet to compare across all tokenizers"
+                    className="min-h-[140px] bg-background/70"
+                  />
+                  {renderSampleControls('compare')}
+                </div>
                 <Button onClick={runCompare} disabled={compareLoading}>
-                  {compareLoading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}Compare every tokenizer
+                  {compareLoading ? (
+                    <>
+                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />Comparing tokenizers…
+                    </>
+                  ) : (
+                    'Compare every tokenizer'
+                  )}
                 </Button>
               </div>
             )}
             {mode === 'batch' && (
               <div className="space-y-4">
-                <Textarea
-                  value={batchText}
-                  onChange={(event) => setBatchText(event.target.value)}
-                  placeholder="One sample per line—mix Indic scripts, emoji and URLs to stress-test tokenizers."
-                  className="min-h-[220px] bg-background/70"
-                />
+                <div className="relative">
+                  <Textarea
+                    value={batchText}
+                    onChange={(event) => setBatchText(event.target.value)}
+                    placeholder="One sample per line—mix Indic scripts, emoji and URLs to stress-test tokenizers."
+                    className="min-h-[220px] bg-background/70"
+                  />
+                  {renderSampleControls('batch')}
+                </div>
                 <div className="flex flex-wrap items-center gap-3">
                   <Button onClick={runBatchAnalysis} disabled={batchLoading}>
-                    {batchLoading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}Run batch analysis
+                    {batchLoading ? (
+                      <>
+                        <Loader2 className="mr-2 h-4 w-4 animate-spin" />Running batch analysis…
+                      </>
+                    ) : (
+                      'Run batch analysis'
+                    )}
                   </Button>
                   {batchResults.length > 0 && (
                     <Button type="button" variant="outline" onClick={exportToCSV}>
@@ -612,6 +860,85 @@ export default function App() {
           </CardContent>
         </Card>
       </main>
+
+      <footer className="border-t border-border/60 bg-background/60 backdrop-blur mt-16">
+        <div className="container flex flex-col gap-10 py-12 lg:flex-row lg:items-start lg:justify-between">
+          <div className="space-y-5">
+            <Badge variant="secondary" className="w-max gap-2.5 px-3 py-1.5 bg-secondary/60 text-secondary-foreground">
+              <Sparkles className="h-4.5 w-4.5" />
+              Tokenizer Lab
+            </Badge>
+            <div className="space-y-2">
+              <h2 className="text-3xl font-semibold tracking-tight sm:text-4xl md:text-5xl">
+                Multilingual tokenization workbench
+              </h2>
+              <p className="max-w-2xl text-base text-muted-foreground">
+                Explore how cutting-edge tokenizers behave on Indic and multilingual samples. Track metrics,
+                compare models, and export structured results in seconds.
+              </p>
+            </div>
+            {selectedModelInfo ? (
+              <div className="flex flex-wrap items-center gap-3 text-sm text-muted-foreground">
+                <Badge variant="outline" className="bg-background/60">
+                  {CATEGORY_LABELS[selectedModelInfo.category]}
+                </Badge>
+                <span>
+                  <span className="font-semibold text-foreground">{selectedModelInfo.name}</span>
+                  {selectedModelInfo.shortName && (
+                    <span className="text-muted-foreground"> · {selectedModelInfo.shortName}</span>
+                  )}
+                </span>
+              </div>
+            ) : null}
+          </div>
+
+          <Card className="max-w-sm bg-card/70 shadow-lg shadow-primary/10">
+            <CardHeader className="pb-3">
+              <CardTitle className="text-base">Hugging Face access token</CardTitle>
+              <CardDescription>
+                Stored locally in your browser. Required for gated models like Meta Llama 3 and Mistral.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              <div className="space-y-2">
+                <Label htmlFor="hf-token" className="text-xs uppercase tracking-wide text-muted-foreground">
+                  Access token
+                </Label>
+                <div className="flex items-center gap-2">
+                  <Input
+                    id="hf-token"
+                    type={showToken ? 'text' : 'password'}
+                    value={hfToken}
+                    onChange={(event) => setHfToken(event.target.value)}
+                    placeholder="hf_..."
+                    className="bg-background/80"
+                  />
+                  <Button
+                    type="button"
+                    variant="outline"
+                    className="shrink-0"
+                    onClick={() => setShowToken((s) => !s)}
+                  >
+                    {showToken ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                  </Button>
+                </div>
+              </div>
+              <p className="text-xs text-muted-foreground">
+                Need one? Visit{' '}
+                <a
+                  href="https://huggingface.co/settings/tokens"
+                  target="_blank"
+                  rel="noreferrer"
+                  className="font-medium text-primary"
+                >
+                  huggingface.co/settings/tokens
+                </a>{' '}
+                and create a <strong>read</strong>-only token. Currently cached token ID: {getHfTokenId() || '—'}
+              </p>
+            </CardContent>
+          </Card>
+        </div>
+      </footer>
     </div>
   )
 }

@@ -279,7 +279,11 @@ export async function displayTokensFor(
   if (rawTokenStrings.length === ids.length && rawTokenStrings.length > 0) {
     return rawTokenStrings.map((token, i) => {
       const decoded = decodeByteToken(token);
-      const readable = makeReadableToken(decoded, { fallback: convertedTokens?.[i] });
+      let readable = makeReadableToken(decoded, { fallback: convertedTokens?.[i] });
+      if (readable === '⍰') {
+        // Fall back to the raw token string so we surface byte-level hints instead of an unknown glyph
+        readable = makeReadableToken(token, { fallback: convertedTokens?.[i] });
+      }
       return visWS(readable);
     });
   }
@@ -302,9 +306,14 @@ export async function displayTokensFor(
         const readableSingle = makeReadableToken(single, { fallback: convertedFallback });
         out.push(visWS(readableSingle));
       } catch (individualError) {
-        // Last resort: show token ID
-        const readable = makeReadableToken(undefined, { fallback: convertedFallback });
-        out.push(visWS(readable));
+        // Last resort: Use the converted token if available, or show as UNK-like token
+        console.warn(`Failed to decode token ${ids[i]} (index ${i}):`, individualError);
+        if (convertedFallback && convertedFallback !== '⍰') {
+          out.push(visWS(convertedFallback));
+        } else {
+          // Mark as UNK if we can't decode it
+          out.push(visWS('<UNK>'));
+        }
       }
     }
   }
@@ -408,7 +417,6 @@ export const AVAILABLE_MODELS: ModelInfo[] = [
   // Frontier Tokenizers (non-Transformers.js or cutting-edge models)
   { id: 'openai/tiktoken/cl100k_base', name: 'OpenAI GPT-4 Family (cl100k_base)', shortName: 'OpenAI CL100K', category: 'frontier', implementation: 'tiktoken', encoding: 'cl100k_base' },
   { id: 'openai/tiktoken/o200k_base', name: 'OpenAI GPT-4o mini (o200k_base)', shortName: 'OpenAI O200K', category: 'frontier', implementation: 'tiktoken', encoding: 'o200k_base' },
-  { id: 'anthropic/claude-3-opus-20240229', name: 'Anthropic Claude 3 Opus', shortName: 'Claude 3', category: 'frontier', implementation: 'tiktoken', encoding: 'anthropic-claude' },
   { id: 'meta-llama/Meta-Llama-3.1-8B-Instruct', name: 'Meta Llama 3.1 8B Instruct', shortName: 'Llama3.1-8B', category: 'frontier', implementation: 'transformers' },
   { id: 'mistralai/Mistral-7B-Instruct-v0.3', name: 'Mistral 7B Instruct v0.3', shortName: 'Mistral', category: 'frontier', implementation: 'transformers' }
 ];
@@ -512,6 +520,25 @@ export async function tokenizeOnce(repo: string, text: string): Promise<Tokeniza
       return s + [...cleanTok].length;
     }, 0) / t;
 
+    // Calculate UNK percentage - check both tokenStrings and displayTokens
+    let unkCount = 0;
+    if (tokenStrings) {
+      console.log('TokenStrings for UNK check:', tokenStrings);
+      unkCount = tokenStrings.filter(token => 
+        token === '[UNK]' || token === '<unk>' || token === '�' || token.includes('[UNK]')
+      ).length;
+    }
+    // Also check displayTokens for UNK patterns as fallback (including decoding failures)
+    if (unkCount === 0) {
+      console.log('DisplayTokens for UNK check:', displayTokens);
+      unkCount = displayTokens.filter(token => 
+        token.includes('[UNK]') || token === '[UNK]' || token === '<unk>' || 
+        token === '�' || token.includes('<UNK>') || token === '⍰'
+      ).length;
+    }
+    console.log(`UNK count: ${unkCount} out of ${ids.length} tokens`);
+    const unkPercentage = ids.length > 0 ? (unkCount / ids.length) * 100 : 0;
+
     return {
       ids,
       tokens: displayTokens,
@@ -524,7 +551,7 @@ export async function tokenizeOnce(repo: string, text: string): Promise<Tokeniza
         tokensPer100Chars: (ids.length / Math.max(1, graphemes)) * 100,
         bytesPerToken: bytes / t,
         avgTokenLength: avgTokenChars,
-        unkPercentage: 0
+        unkPercentage
       }
     };
   } catch (error) {
