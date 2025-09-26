@@ -445,7 +445,7 @@ export default function App() {
                   </button>
                   {modelMenuOpen && (
                     <div
-                      className="absolute z-50 mt-2 max-h-[340px] w-[320px] overflow-auto overscroll-contain rounded-lg border border-border/60 bg-popover p-2 shadow-xl"
+                      className="absolute z-50 mt-2 max-h-[340px] w-[320px] overflow-auto overscroll-contain rounded-lg border border-border/60 bg-popover p-2 shadow-xl scrollbar-hidden"
                       role="menu"
                       aria-label="Tokenizer models"
                       aria-orientation="vertical"

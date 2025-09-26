@@ -73,3 +73,14 @@
     @apply font-medium text-primary underline-offset-4 hover:underline;
   }
 }
+
+@layer utilities {
+  .scrollbar-hidden {
+    scrollbar-width: none;
+  }
+
+  .scrollbar-hidden::-webkit-scrollbar {
+    width: 0;
+    height: 0;
+  }
+}
