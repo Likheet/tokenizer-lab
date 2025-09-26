@@ -2,6 +2,8 @@ import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react'
 import type { KeyboardEvent } from 'react'
 import { Download, Eye, EyeOff, Loader2, Sparkles, ChevronsUpDown, Square, GitCompare, ListTree } from 'lucide-react'
 
+import { ModeToggle } from './components/ui/theme-toggle'
+
 import { Button } from './components/ui/button'
 import { Badge } from './components/ui/badge'
 import {
@@ -34,7 +36,7 @@ import {
 // Tabs removed from UI; keeping import commented if needed later
 // import { Tabs, TabsContent } from './components/ui/tabs'
 import { cn } from './lib/utils'
-import { SegmentGroup } from './components/ui/segment-group'
+import { ButtonGroup } from './components/ui/button-group'
 import { Textarea } from './components/ui/textarea'
 import {
   AVAILABLE_MODELS,
@@ -318,10 +320,13 @@ export default function App() {
       <div className="absolute inset-0 -z-10 backdrop-blur-[2px]" />
 
       <header className="border-b border-border/60 bg-background/60 backdrop-blur">
-        <div className="container flex flex-col gap-6 py-10 lg:flex-row lg:items-center lg:justify-between">
-          <div className="space-y-4">
-            <Badge variant="secondary" className="w-max gap-2 bg-secondary/60 text-secondary-foreground">
-              <Sparkles className="h-4 w-4" />
+        <div className="container flex flex-col gap-7 py-12 lg:flex-row lg:items-center lg:justify-between">
+          <div className="absolute right-6 top-6">
+            <ModeToggle />
+          </div>
+          <div className="space-y-5">
+            <Badge variant="secondary" className="w-max gap-2.5 px-3 py-1.5 bg-secondary/60 text-secondary-foreground">
+              <Sparkles className="h-4.5 w-4.5" />
               Tokenizer Lab
             </Badge>
             <div className="space-y-2">
@@ -396,52 +401,54 @@ export default function App() {
         </div>
       </header>
 
-      <main className="container space-y-8 py-10">
+      <main className="container space-y-10 py-12">
         <Card className="border border-border/70 bg-card/70 shadow-xl shadow-primary/5">
-          <CardHeader className="pb-4">
-            <div className="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
-              <div className="space-y-1.5">
-                <CardTitle className="text-xl">Workspace</CardTitle>
+          <CardHeader className="pb-5">
+            <div className="flex flex-col gap-5 md:flex-row md:items-end md:justify-between">
+              <div className="space-y-2">
+                <CardTitle className="text-2xl">Workspace</CardTitle>
                 <CardDescription className="text-sm">Select a model & switch modes. Smooth animated slider below.</CardDescription>
               </div>
-              <div className="flex flex-col items-stretch gap-3 sm:flex-row sm:items-center">
-                <SegmentGroup.Root value={mode} onValueChange={(e) => setMode(e.value as Mode)} size="md" className="min-w-[260px]">
-                  <SegmentGroup.Indicator />
-                  <SegmentGroup.Items items={[
+              <div className="flex flex-col items-stretch gap-4 sm:flex-row sm:items-center">
+                <ButtonGroup
+                  value={mode}
+                  onChange={(value) => setMode(value as Mode)}
+                  options={[
                     {
-                      value: 'single',
                       label: (
-                        <span className="flex items-center gap-1.5 text-xs uppercase tracking-wide">
-                          <Square className="h-3.5 w-3.5" /> Single
+                        <span className="flex items-center gap-2 text-xs uppercase tracking-wide">
+                          <Square className="h-4 w-4" /> Single
                         </span>
-                      )
+                      ),
+                      value: 'single'
                     },
                     {
-                      value: 'compare',
                       label: (
-                        <span className="flex items-center gap-1.5 text-xs uppercase tracking-wide">
-                          <GitCompare className="h-3.5 w-3.5" /> Compare
+                        <span className="flex items-center gap-2 text-xs uppercase tracking-wide">
+                          <GitCompare className="h-4 w-4" /> Compare
                         </span>
-                      )
+                      ),
+                      value: 'compare'
                     },
                     {
-                      value: 'batch',
                       label: (
-                        <span className="flex items-center gap-1.5 text-xs uppercase tracking-wide">
-                          <ListTree className="h-3.5 w-3.5" /> Batch
+                        <span className="flex items-center gap-2 text-xs uppercase tracking-wide">
+                          <ListTree className="h-4 w-4" /> Batch
                         </span>
-                      )
+                      ),
+                      value: 'batch'
                     }
-                  ]} />
-                </SegmentGroup.Root>
+                  ]}
+                  className="min-w-[280px]"
+                />
                 <div className="relative">
                   <button
                     onClick={() => setModelMenuOpen(o => !o)}
-                    className="flex w-[260px] items-center justify-between rounded-md border border-border/60 bg-background/70 px-3 py-2 text-left text-sm font-medium shadow-sm hover:bg-background/90"
+                    className="flex w-[280px] items-center justify-between rounded-md border border-border/60 bg-background/70 px-4 py-2.5 text-left text-sm font-medium shadow-sm hover:bg-background/90"
                     aria-expanded={modelMenuOpen}
                   >
                     <span className="truncate">{selectedModelInfo?.name || 'Select tokenizer'}</span>
-                    <ChevronsUpDown className="ml-2 h-4 w-4 opacity-60" />
+                    <ChevronsUpDown className="ml-2 h-4.5 w-4.5 opacity-60" />
                   </button>
                   {modelMenuOpen && (
                     <div
@@ -515,27 +522,27 @@ export default function App() {
         </Card>
 
         <Card className="bg-card/80 shadow-2xl shadow-primary/10">
-          <CardHeader className="pb-3">
-            <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+          <CardHeader className="pb-4">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
               <div>
-                <CardTitle className="text-lg leading-tight">{MODE_META[mode].title}</CardTitle>
-                <CardDescription>{MODE_META[mode].description}</CardDescription>
+                <CardTitle className="text-xl leading-tight">{MODE_META[mode].title}</CardTitle>
+                <CardDescription className="mt-1">{MODE_META[mode].description}</CardDescription>
               </div>
               <div className="hidden sm:block text-xs text-muted-foreground">Mode: {MODE_META[mode].short}</div>
             </div>
           </CardHeader>
-          <CardContent className="space-y-6">
+          <CardContent className="space-y-7">
             {mode === 'single' && (
-              <div className="space-y-4">
+              <div className="space-y-5">
                 <Textarea
                   value={text}
                   onChange={(event) => setText(event.target.value)}
                   placeholder="Paste or type the text you want to tokenize…"
-                  className="min-h-[140px] bg-background/70"
+                  className="min-h-[160px] bg-background/70 p-4"
                 />
-                <div className="flex flex-wrap items-center gap-3">
-                  <Button onClick={runSingle} disabled={loading}>
-                    {loading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}Tokenize sample
+                <div className="flex flex-wrap items-center gap-4">
+                  <Button onClick={runSingle} disabled={loading} className="px-5 py-2.5 h-auto">
+                    {loading && <Loader2 className="mr-2.5 h-4.5 w-4.5 animate-spin" />}Tokenize sample
                   </Button>
                   <p className="text-xs text-muted-foreground">
                     Tokens are rendered with visible whitespace markers so you can track segmentation precisely.
@@ -617,54 +624,90 @@ interface SingleResultViewProps {
 
 function SingleResultView({ result, tokenView, onTokenViewChange }: SingleResultViewProps) {
   return (
-    <div className="grid gap-6 lg:grid-cols-[340px,1fr]">
-      <Card className="h-full bg-card/70">
+    <div className="flex flex-col gap-6">
+      <Card className="bg-card/70">
         <CardHeader className="pb-4">
-          <CardTitle className="text-lg">Tokenization metrics</CardTitle>
-          <CardDescription>High-level stats for the current tokenizer run.</CardDescription>
+          <div className="flex flex-wrap items-center justify-between gap-4">
+            <div>
+              <CardTitle className="text-2xl font-semibold">
+                Tokenization metrics
+              </CardTitle>
+              <CardDescription className="text-base">High-level stats for the current tokenizer run.</CardDescription>
+            </div>
+              <Badge variant="outline" className="px-4 py-2 text-sm">
+                <span className="font-bold">{result.metrics.tokenCount}</span>&nbsp;tokens in total
+              </Badge>
+          </div>
         </CardHeader>
-        <CardContent className="grid gap-3">
-          {METRIC_FIELDS.map(({ key, label, format }) => {
-            const value = result.metrics[key]
-            const formatted = typeof value === 'number' ? (format ? format(value) : value.toString()) : '—'
-            const isDestructive = key === 'unkPercentage' && value > 0
-            return (
-              <div
-                key={key}
-                className="flex items-center justify-between rounded-lg border border-border/60 bg-background/60 px-3 py-2 text-sm"
-              >
-                <span className="text-muted-foreground">{label}</span>
-                <span className={cn('tabular-nums font-medium', isDestructive ? 'text-destructive' : 'text-foreground')}>
-                  {formatted}
-                </span>
-              </div>
-            )
-          })}
+        <CardContent>
+          <div className="grid gap-4 grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4">
+            {METRIC_FIELDS.map(({ key, label, format }) => {
+              const value = result.metrics[key]
+              const formatted = typeof value === 'number' ? (format ? format(value) : value.toString()) : '—'
+              const isDestructive = key === 'unkPercentage' && value > 0
+              
+              // Add icons for better identification
+              // Removed icons for cleaner UI
+
+              return (
+                <div
+                  key={key}
+                  className={cn(
+                    "flex flex-col rounded-lg border bg-background/60 px-4 py-3",
+                    isDestructive ? "border-destructive/30" : "border-border/60",
+                    isDestructive && "bg-destructive/5"
+                  )}
+                >
+                  <div className="mb-1">
+                    <span className={cn(
+                      "text-sm font-medium uppercase tracking-wide",
+                      isDestructive ? "text-destructive" : "text-muted-foreground"
+                    )}>
+                      {label}
+                    </span>
+                  </div>
+                  <span className={cn(
+                    "text-xl tabular-nums font-semibold",
+                    isDestructive ? "text-destructive" : "text-foreground"
+                  )}>
+                    {formatted}
+                  </span>
+                </div>
+              )
+            })}
+          </div>
         </CardContent>
       </Card>
 
       <Card className="bg-card/70">
         <CardHeader className="flex flex-col gap-3 pb-4 sm:flex-row sm:items-end sm:justify-between">
           <div>
-            <CardTitle className="text-lg">Token explorer</CardTitle>
-            <CardDescription>Switch views to inspect IDs, source offsets, or raw model tokens.</CardDescription>
+            <CardTitle className="text-2xl font-semibold">
+              Token explorer
+            </CardTitle>
+            <CardDescription className="text-base">Switch views to inspect IDs, source offsets, or raw model tokens.</CardDescription>
           </div>
-          <Select value={tokenView} onValueChange={(value) => onTokenViewChange(value as TokenView)}>
-            <SelectTrigger className="w-[220px]">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectGroup>
-                {TOKEN_VIEW_OPTIONS.map((option) => (
-                  <SelectItem key={option.value} value={option.value}>
-                    {option.label}
-                  </SelectItem>
-                ))}
-              </SelectGroup>
-            </SelectContent>
-          </Select>
+          <Badge variant="outline" className="px-3 py-2 text-sm">
+            Tokens: <span className="font-bold ml-1">{result.tokens.length}</span>
+          </Badge>
         </CardHeader>
         <CardContent>
+          <div className="mb-4">
+            <Select value={tokenView} onValueChange={(value) => onTokenViewChange(value as TokenView)}>
+              <SelectTrigger className="w-full sm:w-[250px]">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectGroup>
+                  {TOKEN_VIEW_OPTIONS.map((option) => (
+                    <SelectItem key={option.value} value={option.value}>
+                      {option.label}
+                    </SelectItem>
+                  ))}
+                </SelectGroup>
+              </SelectContent>
+            </Select>
+          </div>
           <ScrollArea className="h-[280px] w-full rounded-lg border border-border/60 bg-background/70">
             <div className="flex flex-wrap gap-2 p-4">
               {result.tokens.map((token, index) => {
@@ -691,7 +734,7 @@ function SingleResultView({ result, tokenView, onTokenViewChange }: SingleResult
                   <Badge
                     key={`${token}-${index}`}
                     variant={isUnk ? 'destructive' : 'outline'}
-                    className="cursor-default whitespace-pre bg-background/70 px-2.5 py-1 font-mono text-[11px] tracking-tight shadow-sm ring-1 ring-inset ring-border/40 hover:ring-border/60 transition"
+                    className="cursor-default whitespace-pre bg-background/70 px-3 py-2 font-mono text-sm tracking-tight shadow-sm border border-border/40"
                     title={title.join(' | ')}
                   >
                     {display}

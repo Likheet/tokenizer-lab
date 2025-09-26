@@ -4,30 +4,6 @@
 
 @layer base {
   :root {
-    --background: 210 30% 6%;
-    --foreground: 210 40% 98%;
-    --muted: 210 20% 18%;
-    --muted-foreground: 210 15% 70%;
-    --popover: 210 45% 8%;
-    --popover-foreground: 210 40% 98%;
-    --card: 210 35% 8%;
-    --card-foreground: 210 40% 98%;
-    --border: 220 15% 20%;
-    --input: 220 15% 20%;
-    --primary: 215 92% 62%;
-    --primary-foreground: 0 0% 100%;
-    --secondary: 220 16% 22%;
-    --secondary-foreground: 210 40% 96%;
-    --accent: 167 84% 65%;
-    --accent-foreground: 210 40% 8%;
-    --destructive: 0 84% 60%;
-    --destructive-foreground: 210 40% 98%;
-    --ring: 216 100% 70%;
-    --radius: 0.75rem;
-    --font-sans: "Inter", "Noto Sans", "Noto Sans Devanagari", "Noto Sans Kannada", system-ui, sans-serif;
-  }
-
-  .dark {
     --background: 0 0% 100%;
     --foreground: 210 35% 10%;
     --muted: 210 20% 95%;
@@ -47,6 +23,30 @@
     --destructive: 0 72% 51%;
     --destructive-foreground: 210 35% 98%;
     --ring: 217 100% 70%;
+    --radius: 0.75rem;
+    --font-sans: "Inter", "Noto Sans", "Noto Sans Devanagari", "Noto Sans Kannada", system-ui, sans-serif;
+  }
+
+  .dark {
+    --background: 210 30% 6%;
+    --foreground: 210 40% 98%;
+    --muted: 210 20% 18%;
+    --muted-foreground: 210 15% 70%;
+    --popover: 210 45% 8%;
+    --popover-foreground: 210 40% 98%;
+    --card: 210 35% 8%;
+    --card-foreground: 210 40% 98%;
+    --border: 220 15% 20%;
+    --input: 220 15% 20%;
+    --primary: 215 92% 62%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 220 16% 22%;
+    --secondary-foreground: 210 40% 96%;
+    --accent: 167 84% 65%;
+    --accent-foreground: 210 40% 8%;
+    --destructive: 0 84% 60%;
+    --destructive-foreground: 210 40% 98%;
+    --ring: 216 100% 70%;
   }
 }
 
