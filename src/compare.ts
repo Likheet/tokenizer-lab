@@ -3,12 +3,12 @@ import { tokenizeOnce, AVAILABLE_MODELS } from './tokenizers'
 export const COMPARISON_REPOS = AVAILABLE_MODELS.map(model => model.id)
 
 export async function compareAll(text: string) {
-  const out = []
-  for (const repo of COMPARISON_REPOS) {
-    const r = await tokenizeOnce(repo, text)
-    out.push({ repo, ...r })
-  }
-  return out
+  const jobs = COMPARISON_REPOS.map(async (repo) => {
+    const result = await tokenizeOnce(repo, text)
+    return { repo, ...result }
+  })
+
+  return Promise.all(jobs)
 }
 
 export type Row = {
@@ -27,17 +27,17 @@ export async function runBatch(repos: string[], lines: string[]): Promise<Row[]>
   const rows: Row[] = []
   for (const repo of repos) {
     for (const text of lines) {
-      const r = await tokenizeOnce(repo, text)
+      const result = await tokenizeOnce(repo, text)
       rows.push({
         repo,
         text,
-        tokens: r.metrics.tokenCount,
-        chars: r.metrics.charCount,
-        bytes: r.metrics.byteCount,
-        tokens_per_100_chars: r.metrics.tokensPer100Chars,
-        bytes_per_token: r.metrics.bytesPerToken,
-        avg_token_chars: r.metrics.avgTokenLength,
-        unk_rate: r.metrics.unkPercentage ?? 0
+        tokens: result.metrics.tokenCount,
+        chars: result.metrics.charCount,
+        bytes: result.metrics.byteCount,
+        tokens_per_100_chars: result.metrics.tokensPer100Chars,
+        bytes_per_token: result.metrics.bytesPerToken,
+        avg_token_chars: result.metrics.avgTokenLength,
+        unk_rate: result.metrics.unkPercentage ?? 0
       })
     }
   }
@@ -53,49 +53,65 @@ export function toCSV(rows: Row[]) {
 
 export function downloadCSV(name: string, csv: string) {
   const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' })
-  const a = document.createElement('a')
-  a.href = URL.createObjectURL(blob)
-  a.download = name
-  a.click()
-  URL.revokeObjectURL(a.href)
+  const anchor = document.createElement('a')
+  anchor.href = URL.createObjectURL(blob)
+  anchor.download = name
+  anchor.click()
+  URL.revokeObjectURL(anchor.href)
 }
 
 export type Slice = 'Hindi' | 'Hinglish' | 'Kannada' | 'English' | 'Mixed'
 
-export function tagSlice(s: string): Slice {
-  // quick rules; customize as you like
-  if (/[ಂಅ-ಹ]/.test(s)) return 'Kannada'
-  if (/[ऀ-ॿ]/.test(s)) return 'Hindi'
-  if (/https?:|[@:#-]/.test(s) || /😂|🙏/.test(s)) return 'Mixed'
-  if (/[a-z]/i.test(s) && /[ऀ-ॿ]/.test(s)) return 'Hinglish'
-  if (/^[\x00-\x7F]+$/.test(s)) return 'English'
+export function tagSlice(text: string): Slice {
+  const hasKannada = /[\u0C80-\u0CFF]/.test(text)
+  const hasDevanagari = /[\u0900-\u097F]/.test(text)
+  const hasLatin = /[A-Za-z]/.test(text)
+  const hasUrlOrSymbol = /https?:|[@:#-]/.test(text)
+  const hasEmojiLike = /[\u2600-\u27BF\u1F300-\u1FAFF]/.test(text)
+
+  if (hasKannada) return 'Kannada'
+  if (hasDevanagari && hasLatin) return 'Hinglish'
+  if (hasDevanagari) return 'Hindi'
+  if (hasLatin && (hasEmojiLike || hasUrlOrSymbol)) return 'Mixed'
+  if (hasLatin) return 'English'
+  if (hasEmojiLike || hasUrlOrSymbol) return 'Mixed'
   return 'Mixed'
 }
 
-export function summarize(rows: Row[]) {
-  const key = (r: Row) => `${r.repo}|${tagSlice(r.text)}`
-  const acc = new Map<string, { n: number, t: number, bpt: number, t100: number, unk: number }>()
-  
-  for (const r of rows) {
-    const k = key(r)
-    const v = acc.get(k) ?? { n: 0, t: 0, bpt: 0, t100: 0, unk: 0 }
-    v.n++
-    v.t += r.tokens
-    v.bpt += r.bytes_per_token
-    v.t100 += r.tokens_per_100_chars
-    v.unk += r.unk_rate
-    acc.set(k, v)
+export type SummaryRow = {
+  repo: string
+  slice: Slice
+  mean_tokens: number
+  mean_tokens_per_100: number
+  mean_bytes_per_token: number
+  mean_unk: number
+}
+
+export function summarize(rows: Row[]): SummaryRow[] {
+  const key = (row: Row) => `${row.repo}|${tagSlice(row.text)}`
+  const acc = new Map<string, { n: number; tokens: number; bytesPerToken: number; tokensPer100: number; unk: number }>()
+
+  for (const row of rows) {
+    const bucketKey = key(row)
+    const bucket = acc.get(bucketKey) ?? { n: 0, tokens: 0, bytesPerToken: 0, tokensPer100: 0, unk: 0 }
+    bucket.n += 1
+    bucket.tokens += row.tokens
+    bucket.bytesPerToken += row.bytes_per_token
+    bucket.tokensPer100 += row.tokens_per_100_chars
+    bucket.unk += row.unk_rate
+    acc.set(bucketKey, bucket)
   }
-  
-  return Array.from(acc, ([k, v]) => {
-    const [repo, slice] = k.split('|')
+
+  return Array.from(acc, ([bucketKey, bucket]) => {
+    const [repo, slice] = bucketKey.split('|')
+    const divisor = Math.max(1, bucket.n)
     return {
       repo,
-      slice,
-      mean_tokens: v.t / v.n,
-      mean_tokens_per_100: v.t100 / v.n,
-      mean_bytes_per_token: v.bpt / v.n,
-      mean_unk: v.unk / v.n
+      slice: slice as Slice,
+      mean_tokens: bucket.tokens / divisor,
+      mean_tokens_per_100: bucket.tokensPer100 / divisor,
+      mean_bytes_per_token: bucket.bytesPerToken / divisor,
+      mean_unk: bucket.unk / divisor
     }
   })
 }
