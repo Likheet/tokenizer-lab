@@ -12,7 +12,7 @@ import type { TokenizationResult, ModelInfo } from '../../tokenizers'
 import { CATEGORY_LABELS } from './constants'
 
 interface CompareResultsViewProps {
-  results: (TokenizationResult & { repo: string })[]
+  results: (TokenizationResult & { repo: string; display_name?: string })[]
   modelLookup: Record<string, ModelInfo>
 }
 
@@ -32,8 +32,9 @@ export function CompareResultsView({ results, modelLookup }: CompareResultsViewP
       <div className="grid gap-6 lg:grid-cols-2 xl:grid-cols-3">
         {results.map((result) => {
           const modelInfo = modelLookup[result.repo]
-          const displayName = modelInfo?.shortName ?? result.repo.split('/')[1]
+          const displayName = result.display_name ?? modelInfo?.shortName ?? modelInfo?.name ?? result.repo
           const categoryLabel = modelInfo?.category ? CATEGORY_LABELS[modelInfo.category] : 'Tokenizer'
+          const subtitle = modelInfo?.name ?? result.display_name ?? result.repo
 
           return (
             <Card key={result.repo} className="bg-card/70">
@@ -44,7 +45,7 @@ export function CompareResultsView({ results, modelLookup }: CompareResultsViewP
                     {categoryLabel}
                   </Badge>
                 </CardTitle>
-                <CardDescription>{modelInfo?.name ?? result.repo}</CardDescription>
+                <CardDescription>{subtitle}</CardDescription>
               </CardHeader>
               <CardContent className="space-y-3">
                 <div className="grid gap-2 text-sm">

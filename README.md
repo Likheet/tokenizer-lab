@@ -51,8 +51,13 @@ Every tokenization run surfaces:
 	- `bytesPerToken`
 	- `avgTokenLength`
 	- `unkPercentage`
+- **Full provenance tracking** (JSON blob per run with tokenizer version, build info, git commit, OS/browser details)
 
-In Batch mode, the application aggregates the above for each snippet across all comparison models and produces a downloadable CSV (`tokenizer-lab-batch.csv`).
+In Batch mode, the application:
+- Aggregates metrics across all comparison models and produces **two downloadable CSVs**:
+  - **Detailed CSV**: Row-level data with full provenance for reproducibility
+  - **Summary CSV**: Statistical aggregation by language slice with means, standard deviations, and 95% bootstrap confidence intervals
+- Shows **variance analysis** in the UI with error bars (mean ± stddev) and confidence intervals on hover
 
 ---
 

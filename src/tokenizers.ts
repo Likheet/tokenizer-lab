@@ -2,6 +2,12 @@ import { init as initTiktoken, Tiktoken } from '@dqbd/tiktoken/lite/init';
 import wasmUrl from '@dqbd/tiktoken/lite/tiktoken_bg.wasm?url';
 import claudeRegistry from '@anthropic-ai/tokenizer/claude.json' assert { type: 'json' };
 
+export const TIKTOKEN_VERSION = '1.0.22';
+export const TRANSFORMERS_JS_VERSION = '2.17.2';
+export const ANTHROPIC_TOKENIZER_VERSION = '0.0.4';
+
+export const TIKTOKEN_WASM_URL = wasmUrl;
+
 // --- helpers ---
 function toIds(enc: any): number[] {
   if (Array.isArray(enc)) return enc as number[];
@@ -247,6 +253,7 @@ async function tokenizeWithTiktokenModel(model: ModelInfo, text: string): Promis
       tokensPer100Chars: (tokenCount / Math.max(1, graphemes)) * 100,
       bytesPerToken: byteCount / safeDivisor,
       avgTokenLength: avgTokenChars,
+      unkCount: 0,
       unkPercentage: 0
     }
   };
@@ -344,6 +351,7 @@ function waitForTransformers(): Promise<any> {
 
 export type ModelCategory = 'basic' | 'indian' | 'frontier';
 export type ModelImplementation = 'transformers' | 'tiktoken';
+export type TokenizerFamily = 'WordPiece' | 'SentencePiece' | 'ByteBPE' | 'Tiktoken' | 'Unspecified';
 
 export interface ModelInfo {
   id: string;
@@ -352,6 +360,8 @@ export interface ModelInfo {
   category: ModelCategory;
   implementation?: ModelImplementation;
   encoding?: string; // used by tiktoken-backed models
+  family?: TokenizerFamily;
+  vocabSize?: number | null;
 }
 
 export interface TokenizationResult {
@@ -366,6 +376,7 @@ export interface TokenizationResult {
     tokensPer100Chars: number;
     bytesPerToken: number;
     avgTokenLength: number;
+    unkCount: number;
     unkPercentage: number;
   };
 }
@@ -404,21 +415,21 @@ async function preflightHFRepoAccess(repo: string, hfToken?: string): Promise<vo
 
 export const AVAILABLE_MODELS: ModelInfo[] = [
   // Basic/General Tokenizers
-  { id: 'Xenova/bert-base-multilingual-uncased', name: 'mBERT (Multilingual BERT)', shortName: 'mBERT', category: 'basic', implementation: 'transformers' },
-  { id: 'Xenova/t5-small', name: 'T5 (Text-to-Text Transformer)', shortName: 'T5', category: 'basic', implementation: 'transformers' },
-  { id: 'Xenova/xlm-roberta-base', name: 'XLM-RoBERTa', shortName: 'XLM-R', category: 'basic', implementation: 'transformers' },
-  { id: 'Xenova/bert-base-uncased', name: 'BERT (English)', shortName: 'BERT', category: 'basic', implementation: 'transformers' },
-  { id: 'Xenova/distilgpt2', name: 'DistilGPT-2', shortName: 'DistilGPT-2', category: 'basic', implementation: 'transformers' },
+  { id: 'Xenova/bert-base-multilingual-uncased', name: 'mBERT (Multilingual BERT)', shortName: 'mBERT', category: 'basic', implementation: 'transformers', family: 'WordPiece', vocabSize: null },
+  { id: 'Xenova/t5-small', name: 'T5 (Text-to-Text Transformer)', shortName: 'T5', category: 'basic', implementation: 'transformers', family: 'SentencePiece', vocabSize: null },
+  { id: 'Xenova/xlm-roberta-base', name: 'XLM-RoBERTa', shortName: 'XLM-R', category: 'basic', implementation: 'transformers', family: 'SentencePiece', vocabSize: null },
+  { id: 'Xenova/bert-base-uncased', name: 'BERT (English)', shortName: 'BERT', category: 'basic', implementation: 'transformers', family: 'WordPiece', vocabSize: null },
+  { id: 'Xenova/distilgpt2', name: 'DistilGPT-2', shortName: 'DistilGPT-2', category: 'basic', implementation: 'transformers', family: 'ByteBPE', vocabSize: null },
 
   // Indian Language Tokenizers
-  { id: 'ai4bharat/IndicBERTv2-MLM-only', name: 'IndicBERT v2 MLM (AI4Bharat)', shortName: 'IndicBERT v2', category: 'indian', implementation: 'transformers' },
-  { id: 'InvincibleSloth/muril-tokenizer', name: 'MuRIL', shortName: 'MuRIL', category: 'indian', implementation: 'transformers' },
+  { id: 'ai4bharat/IndicBERTv2-MLM-only', name: 'IndicBERT v2 MLM (AI4Bharat)', shortName: 'IndicBERT v2', category: 'indian', implementation: 'transformers', family: 'WordPiece', vocabSize: null },
+  { id: 'InvincibleSloth/muril-tokenizer', name: 'MuRIL', shortName: 'MuRIL', category: 'indian', implementation: 'transformers', family: 'WordPiece', vocabSize: null },
 
   // Frontier Tokenizers (non-Transformers.js or cutting-edge models)
-  { id: 'openai/tiktoken/cl100k_base', name: 'OpenAI GPT-4 Family (cl100k_base)', shortName: 'OpenAI CL100K', category: 'frontier', implementation: 'tiktoken', encoding: 'cl100k_base' },
-  { id: 'openai/tiktoken/o200k_base', name: 'OpenAI GPT-4o mini (o200k_base)', shortName: 'OpenAI O200K', category: 'frontier', implementation: 'tiktoken', encoding: 'o200k_base' },
-  { id: 'meta-llama/Meta-Llama-3.1-8B-Instruct', name: 'Meta Llama 3.1 8B Instruct', shortName: 'Llama3.1-8B', category: 'frontier', implementation: 'transformers' },
-  { id: 'mistralai/Mistral-7B-Instruct-v0.3', name: 'Mistral 7B Instruct v0.3', shortName: 'Mistral', category: 'frontier', implementation: 'transformers' }
+  { id: 'openai/tiktoken/cl100k_base', name: 'OpenAI GPT-4 Family (cl100k_base)', shortName: 'OpenAI CL100K', category: 'frontier', implementation: 'tiktoken', encoding: 'cl100k_base', family: 'Tiktoken', vocabSize: 100000 },
+  { id: 'openai/tiktoken/o200k_base', name: 'OpenAI GPT-4o mini (o200k_base)', shortName: 'OpenAI O200K', category: 'frontier', implementation: 'tiktoken', encoding: 'o200k_base', family: 'Tiktoken', vocabSize: 200000 },
+  { id: 'meta-llama/Meta-Llama-3.1-8B-Instruct', name: 'Meta Llama 3.1 8B Instruct', shortName: 'Llama3.1-8B', category: 'frontier', implementation: 'transformers', family: 'SentencePiece', vocabSize: null },
+  { id: 'mistralai/Mistral-7B-Instruct-v0.3', name: 'Mistral 7B Instruct v0.3', shortName: 'Mistral', category: 'frontier', implementation: 'transformers', family: 'SentencePiece', vocabSize: null }
 ];
 
 export async function tokenizeOnce(repo: string, text: string): Promise<TokenizationResult> {
@@ -551,6 +562,7 @@ export async function tokenizeOnce(repo: string, text: string): Promise<Tokeniza
         tokensPer100Chars: (ids.length / Math.max(1, graphemes)) * 100,
         bytesPerToken: bytes / t,
         avgTokenLength: avgTokenChars,
+        unkCount,
         unkPercentage
       }
     };

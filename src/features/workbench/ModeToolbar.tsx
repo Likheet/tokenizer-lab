@@ -1,8 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { KeyboardEvent } from 'react'
 import { ChevronsUpDown, GitCompare, ListTree, Sparkles, Square } from 'lucide-react'
-
-import { Button } from '../../components/ui/button'
 import {
   Card,
   CardDescription,
@@ -59,6 +57,13 @@ export function ModeToolbar({
     }
     setHighlightedId(selectedModelId)
   }, [menuOpen, selectedModelId])
+
+  // Close menu when switching away from single mode
+  useEffect(() => {
+    if (mode !== 'single') {
+      setMenuOpen(false)
+    }
+  }, [mode])
 
   useEffect(() => {
     if (!menuOpen) return
@@ -177,16 +182,17 @@ export function ModeToolbar({
               options={modeOptions}
               className="min-w-[280px]"
             />
-            <div className="relative">
-              <button
-                ref={triggerRef}
-                onClick={() => setMenuOpen((prev) => !prev)}
-                className="flex w-[280px] items-center justify-between rounded-md border border-border/60 bg-background/70 px-4 py-2.5 text-left text-sm font-medium shadow-sm hover:bg-background/90"
-                aria-expanded={menuOpen}
-              >
-                <span className="truncate">{selectedModelInfo?.name ?? 'Select tokenizer'}</span>
-                <ChevronsUpDown className="ml-2 h-4.5 w-4.5 opacity-60" />
-              </button>
+            {mode === 'single' && (
+              <div className="relative">
+                <button
+                  ref={triggerRef}
+                  onClick={() => setMenuOpen((prev) => !prev)}
+                  className="flex w-[280px] items-center justify-between rounded-md border border-border/60 bg-background/70 px-4 py-2.5 text-left text-sm font-medium shadow-sm hover:bg-background/90"
+                  aria-expanded={menuOpen}
+                >
+                  <span className="truncate">{selectedModelInfo?.name ?? 'Select tokenizer'}</span>
+                  <ChevronsUpDown className="ml-2 h-4.5 w-4.5 opacity-60" />
+                </button>
               {menuOpen && (
                 <div
                   ref={menuRef}
@@ -248,7 +254,8 @@ export function ModeToolbar({
                   </div>
                 </div>
               )}
-            </div>
+              </div>
+            )}
           </div>
         </div>
       </CardHeader>
