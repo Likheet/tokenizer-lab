@@ -1,4 +1,4 @@
-import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from 'react'
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Download, Eye, EyeOff, Loader2, Sparkles } from 'lucide-react'
 
 import { ModeToggle } from './components/ui/theme-toggle'
@@ -60,6 +60,9 @@ import {
   type Row,
   type Slice
 } from './compare'
+import type { AutoSweepCsvRow, AutoSweepJobConfig, AutoSweepWorkerMessage } from './autosweep/types'
+import { AUTOSWEEP_CSV_HEADER, autoSweepRowToCsv } from './autosweep/csv'
+import type { AutoSweepRunRequest } from './features/autosweep/AutoSweepView'
 
 const LOCAL_STORAGE_KEYS = {
   compareSelection: 'tokenizer_lab_compare_selection'
@@ -99,6 +102,9 @@ const ABOUT_ITEMS: AboutItem[] = [
 ]
 
 const TokenBackground = lazy(() => import('./components/background/TokenBackground'))
+const AutoSweepViewLazy = lazy(() =>
+  import('./features/autosweep/AutoSweepView').then((module) => ({ default: module.AutoSweepView }))
+)
 
 export default function App() {
   const [text, setText] = useState('?? ??? ???? ????? ?? - aaj dhoop nahi nikli hai.')
@@ -108,6 +114,15 @@ export default function App() {
   const [result, setResult] = useState<TokenizationResult | null>(null)
   const [compareResults, setCompareResults] = useState<(TokenizationResult & { repo: string; display_name?: string })[]>([])
   const [batchResults, setBatchResults] = useState<Row[]>([])
+  const [autoText, setAutoText] = useState(STARTER_DATASET)
+  const [autoStatus, setAutoStatus] = useState<'idle' | 'running' | 'done' | 'error'>('idle')
+  const [autoProgress, setAutoProgress] = useState<{ processed: number; total: number }>({ processed: 0, total: 0 })
+  const [autoRows, setAutoRows] = useState<AutoSweepCsvRow[]>([])
+  const [autoElapsedMs, setAutoElapsedMs] = useState(0)
+  const [autoChunks, setAutoChunks] = useState(0)
+  const [autoError, setAutoError] = useState<string | null>(null)
+  const [autoLastConfig, setAutoLastConfig] = useState<Record<string, unknown> | null>(null)
+  const [autoCsvLines, setAutoCsvLines] = useState<string[]>([])
   const [selectedRepos, setSelectedRepos] = useState<string[]>(() => {
     if (typeof window === 'undefined') {
       return [...PINNED_DEFAULT_SELECTION]
@@ -150,6 +165,8 @@ export default function App() {
     }
   })
   const [showToken, setShowToken] = useState(false)
+  const autoWorkerRef = useRef<Worker | null>(null)
+  const autoStartRef = useRef<number>(0)
 
   useEffect(() => {
     if (typeof window === 'undefined') return
@@ -159,6 +176,13 @@ export default function App() {
       console.warn('Unable to persist tokenizer selection:', error)
     }
   }, [selectedRepos])
+
+  useEffect(() => () => {
+    if (autoWorkerRef.current) {
+      autoWorkerRef.current.terminate()
+      autoWorkerRef.current = null
+    }
+  }, [])
 
   const modelLookup = useMemo<Record<string, ModelInfo>>(() => {
     return AVAILABLE_MODELS.reduce((acc, model) => {
@@ -307,20 +331,135 @@ export default function App() {
 
   const exportToCSV = useCallback(() => {
     if (!batchResults.length) return
-    
+
     // Generate timestamp for filenames
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)
-    
+
     // Export detailed results with full provenance
     const detailedCSV = toCSV(batchResults)
     downloadCSV(`tokenizer-lab-detailed-${timestamp}.csv`, detailedCSV)
-    
+
     // Export summary with statistics if we have summary data
     if (batchSummary.length > 0) {
       const summaryCSV = summaryToCSV(batchSummary)
       downloadCSV(`tokenizer-lab-summary-${timestamp}.csv`, summaryCSV)
     }
   }, [batchResults, batchSummary])
+
+  const handleAutoRun = useCallback(
+    (request: AutoSweepRunRequest, configPreview: Record<string, unknown>) => {
+      if (autoWorkerRef.current) {
+        autoWorkerRef.current.terminate()
+        autoWorkerRef.current = null
+      }
+
+      setAutoStatus('running')
+      setAutoError(null)
+      setAutoProgress({ processed: 0, total: 0 })
+      setAutoRows([])
+      setAutoChunks(0)
+      setAutoElapsedMs(0)
+      setAutoCsvLines([AUTOSWEEP_CSV_HEADER])
+      setAutoLastConfig(configPreview)
+
+      const worker = new Worker(new URL('./autosweep/autosweep.worker.ts', import.meta.url), {
+        type: 'module'
+      })
+      autoWorkerRef.current = worker
+      autoStartRef.current = performance.now()
+
+      const jobConfig: AutoSweepJobConfig = {
+        jobId: `autosweep-${Date.now().toString(36)}`,
+        lines: request.lines,
+        tokenizers: request.tokenizers,
+        sweeps: request.sweeps,
+        enabledAxes: request.enabledAxes,
+        preset: request.preset,
+        sampleLines: request.sampleLines,
+        repeats: request.repeats,
+        flushEvery: request.flushEvery,
+        seed: request.seed,
+        accessToken: hfToken || undefined
+      }
+
+      worker.onmessage = (event: MessageEvent<AutoSweepWorkerMessage>) => {
+        const message = event.data
+        switch (message.type) {
+          case 'progress':
+            setAutoProgress({ processed: message.processed, total: message.total })
+            setAutoRows((prev) => prev.concat(message.rows))
+            setAutoCsvLines((prev) => prev.concat(message.rows.map(autoSweepRowToCsv)))
+            setAutoChunks((prev) => prev + 1)
+            setAutoElapsedMs(performance.now() - autoStartRef.current)
+            break
+          case 'done':
+            setAutoProgress({ processed: message.processed, total: message.total })
+            setAutoElapsedMs(message.durationMs)
+            setAutoStatus('done')
+            worker.terminate()
+            autoWorkerRef.current = null
+            autoStartRef.current = 0
+            break
+          case 'error':
+            setAutoError(message.message)
+            setAutoStatus('error')
+            setAutoElapsedMs(autoStartRef.current ? performance.now() - autoStartRef.current : 0)
+            worker.terminate()
+            autoWorkerRef.current = null
+            autoStartRef.current = 0
+            break
+          default:
+            break
+        }
+      }
+
+      worker.onerror = (event) => {
+        setAutoError(event.message || 'AutoSweep worker error')
+        setAutoStatus('error')
+        setAutoElapsedMs(autoStartRef.current ? performance.now() - autoStartRef.current : 0)
+        worker.terminate()
+        autoWorkerRef.current = null
+        autoStartRef.current = 0
+      }
+
+      worker.postMessage({ type: 'start', payload: jobConfig })
+    },
+    [hfToken]
+  )
+
+  const handleAutoDownload = useCallback(() => {
+    if (autoCsvLines.length <= 1) return
+    const csv = autoCsvLines.join('\n')
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)
+    downloadCSV(`autosweep-results-${timestamp}.csv`, csv)
+  }, [autoCsvLines])
+
+  const resetAutoSweep = useCallback(() => {
+    if (autoWorkerRef.current) {
+      autoWorkerRef.current.terminate()
+      autoWorkerRef.current = null
+    }
+    autoStartRef.current = 0
+    setAutoStatus('idle')
+    setAutoError(null)
+    setAutoProgress({ processed: 0, total: 0 })
+    setAutoRows([])
+    setAutoChunks(0)
+    setAutoElapsedMs(0)
+    setAutoCsvLines([])
+  }, [])
+
+  const handleAutoCancel = useCallback(() => {
+    if (autoWorkerRef.current) {
+      autoWorkerRef.current.terminate()
+      autoWorkerRef.current = null
+    }
+    const elapsed = autoStartRef.current ? performance.now() - autoStartRef.current : 0
+    setAutoStatus('error')
+    setAutoError('AutoSweep run cancelled by user.')
+    setAutoElapsedMs(elapsed)
+    autoStartRef.current = 0
+  }, [])
 
   return (
     <div className="relative min-h-screen bg-background pb-24">
@@ -362,7 +501,7 @@ export default function App() {
             </div>
           </CardHeader>
           <CardContent className="space-y-7">
-            {(mode === 'compare' || mode === 'batch') && selectionModels.length > 0 && (
+            {(mode === 'compare' || mode === 'batch' || mode === 'auto') && selectionModels.length > 0 && (
               <div className="space-y-3 rounded-lg border border-border/60 bg-background/60 p-4">
                 <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
                   <div>
@@ -554,7 +693,32 @@ export default function App() {
               </div>
             )}
 
-            {err ? (
+            {mode === 'auto' && (
+              <Suspense fallback={<div className="text-sm text-muted-foreground">Loading AutoSweep…</div>}>
+                <AutoSweepViewLazy
+                  text={autoText}
+                  onTextChange={setAutoText}
+                  models={AVAILABLE_MODELS}
+                  pinnedTokenizerIds={PINNED_DEFAULT_SELECTION}
+                  selectedTokenizers={selectedRepos}
+                  onTokenizersChange={setSelectedRepos}
+                  status={autoStatus}
+                  progress={autoProgress}
+                  elapsedMs={autoElapsedMs}
+                  rows={autoRows}
+                  chunkCount={autoChunks}
+                  error={autoError}
+                  lastRunConfig={autoLastConfig}
+                  downloadReady={autoCsvLines.length > 1}
+                  onRun={handleAutoRun}
+                  onCancel={handleAutoCancel}
+                  onDownload={handleAutoDownload}
+                  onReset={resetAutoSweep}
+                />
+              </Suspense>
+            )}
+
+            {err && mode !== 'auto' ? (
               <div className="rounded-lg border border-destructive/40 bg-destructive/10 px-4 py-3 text-sm text-destructive">
                 {err}
               </div>

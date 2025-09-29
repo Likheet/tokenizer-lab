@@ -9,6 +9,7 @@ Tokenizer Lab is an interactive React + Vite application for exploring how moder
 - **Run a single tokenizer** and inspect the generated tokens, offsets, and byte spans in multiple views (“Readable”, “Model tokens”, “Token IDs”, and “Offsets”).
 - **Compare models instantly** across all supported tokenizers to understand how token counts, byte usage, and unknown token rates differ.
 - **Batch process datasets** by pasting newline-delimited snippets and downloading aggregated metrics as CSV for further analysis.
+- **Launch Auto sweeps** to stream tokenizer benchmarks with configurable presets, axes, and tokenizer selections, then download the provenance-rich CSV without leaving the browser.
 - **Visualize whitespace and control characters** clearly thanks to custom rendering that converts spaces to `␣`, tabs to `⇥`, and newlines to `⏎`.
 - **Decode byte-level BPE** tokens responsibly—fallbacks ensure you never see the `�` replacement character, and hex representations are used when decoding is impossible.
 - **Work with gated models** by providing a Hugging Face access token; the app handles license preflight checks and stores the token only in your browser’s local storage.
@@ -66,8 +67,56 @@ In Batch mode, the application:
 1. **Single** – choose any supported model, enter text, and inspect token-by-token output with multiple visualization modes.
 2. **Compare** – run the full roster of models on your current text and review a metrics table to spot divergence quickly.
 3. **Batch** – paste newline-delimited snippets, run them through the comparison set, and export the summary for analysis or reporting.
+4. **Auto** – configure sweep presets, mutation axes, and tokenizer subsets, stream results live, and export the AutoSweep CSV for downstream analysis.
 
 Switching modes preserves your text input so you can iterate without retyping.
+
+## 🚀 Auto sweeps
+
+Auto mode runs inside a dedicated web worker that samples your pasted lines, applies the selected mutation axes, and streams results back as CSV chunks. You can cancel the worker at any point, keep the streamed rows for inspection, and download the accumulated CSV once a chunk has arrived. The download controls keep the exact config JSON so the provenance embedded in every row stays reproducible.
+
+Numeric sweep axes (ascii_ratio, emoji_count, perturbations) emit numeric `x_value` entries to make downstream plotting easier.
+
+### CSV schema
+
+AutoSweep CSV rows are emitted in the following order:
+- slice
+- lang_tag
+- template_id
+- sweep_axis
+- x_value
+- text
+- grapheme_count
+- byte_count
+- ascii_ratio_bytes
+- tokenizer_id
+- tokenizer_family
+- tokenizer_vocab_size
+- add_special_tokens
+- token_count
+- tokens_per_100_chars
+- bytes_per_token
+- avg_token_len_graphemes
+- unk_count
+- unk_percent
+- timed_op
+- time_ms_median
+- time_ms_mad
+- repeats
+- normalization
+- zwj_applied
+- url_applied
+- emoji_count
+- perturbations
+- browser_ua
+- os_platform
+- app_version
+- transformersjs_version
+- tiktoken_version
+- wasm_hash
+- commit_sha
+- timestamp_utc
+- provenance_json
 
 ---
 

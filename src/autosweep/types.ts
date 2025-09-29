@@ -37,6 +37,7 @@ export interface AutoSweepJobConfig {
   repeats: number
   flushEvery?: number
   seed?: number
+  accessToken?: string | null
 }
 
 export interface AutoSweepRuntimeConfig {
@@ -101,7 +102,7 @@ export interface AutoSweepRowContext {
   langTag: string
   templateId: string
   sweepAxis: SweepAxis | 'baseline'
-  xValue: string
+  xValue: string | number
 }
 
 export interface AutoSweepCsvRow {
@@ -109,7 +110,7 @@ export interface AutoSweepCsvRow {
   lang_tag: string
   template_id: string
   sweep_axis: string
-  x_value: string
+  x_value: string | number
   text: string
   grapheme_count: number
   byte_count: number
@@ -124,6 +125,7 @@ export interface AutoSweepCsvRow {
   avg_token_len_graphemes: number
   unk_count: number
   unk_percent: number
+  timed_op: string
   time_ms_median: number
   time_ms_mad: number
   repeats: number

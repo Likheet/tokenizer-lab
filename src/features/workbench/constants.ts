@@ -1,6 +1,6 @@
 import type { ModelCategory, TokenizationResult } from '../../tokenizers'
 
-export type Mode = 'single' | 'compare' | 'batch'
+export type Mode = 'single' | 'compare' | 'batch' | 'auto'
 export type TokenView = 'human' | 'raw' | 'ids' | 'offsets'
 
 export interface ModeMeta {
@@ -24,6 +24,11 @@ export const MODE_META: Record<Mode, ModeMeta> = {
     title: 'Batch analytics',
     description: 'Benchmark many snippets & export.',
     short: 'Batch'
+  },
+  auto: {
+    title: 'Auto sweeps',
+    description: 'Run preset sweeps across tokenizers with AutoSweep.',
+    short: 'Auto'
   }
 }
 

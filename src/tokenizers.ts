@@ -7,6 +7,50 @@ export const TRANSFORMERS_JS_VERSION = '2.17.2';
 export const ANTHROPIC_TOKENIZER_VERSION = '0.0.4';
 
 export const TIKTOKEN_WASM_URL = wasmUrl;
+const TRANSFORMERS_CDN_URL = `https://cdn.jsdelivr.net/npm/@xenova/transformers@${TRANSFORMERS_JS_VERSION}/dist/transformers.min.js`;
+
+let transformersLoadPromise: Promise<any> | null = null;
+
+function readHfGlobal(): any | undefined {
+  if (typeof globalThis !== 'undefined' && (globalThis as any).hf) {
+    return (globalThis as any).hf;
+  }
+  if (typeof window !== 'undefined' && (window as any).hf) {
+    return (window as any).hf;
+  }
+  if (typeof self !== 'undefined' && (self as any).hf) {
+    return (self as any).hf;
+  }
+  return undefined;
+}
+
+async function loadTransformersFromCdn(): Promise<any> {
+  const module = await import(/* @vite-ignore */ TRANSFORMERS_CDN_URL);
+  const { env, AutoTokenizer } = module as { env: any; AutoTokenizer: any };
+
+  env.allowLocalModels = false;
+  env.allowRemoteModels = true;
+  env.useBrowserCache = true;
+
+  const existing = readHfGlobal() ?? {};
+  const merged = {
+    ...existing,
+    env,
+    AutoTokenizer
+  };
+
+  if (typeof globalThis !== 'undefined') {
+    (globalThis as any).hf = merged;
+  }
+  if (typeof window !== 'undefined') {
+    (window as any).hf = merged;
+  }
+  if (typeof self !== 'undefined') {
+    (self as any).hf = merged;
+  }
+
+  return merged;
+}
 
 // --- helpers ---
 function toIds(enc: any): number[] {
@@ -97,17 +141,33 @@ function decodeByteToken(token: string): string {
 
 // Returns the Hugging Face token to use for gated downloads.
 // 1. If a token is stored in localStorage, use it.
-// 2. Otherwise, use the hardcoded test token.
+// 2. Otherwise, fall back to the worker-injected token (if any).
 export function readStoredHfToken(): string | undefined {
-  if (typeof window === 'undefined') return undefined;
-  try {
-    const value = window.localStorage?.getItem('hf_token');
-    const trimmed = value?.trim();
-    return trimmed || undefined;
-  } catch (error) {
-    console.warn('Unable to access localStorage for HF token:', error);
-    return undefined;
+  if (typeof window !== 'undefined') {
+    try {
+      const value = window.localStorage?.getItem('hf_token');
+      const trimmed = value?.trim();
+      if (trimmed) {
+        return trimmed;
+      }
+    } catch (error) {
+      console.warn('Unable to access localStorage for HF token:', error);
+    }
   }
+
+  if (typeof globalThis !== 'undefined') {
+    const globalToken = (globalThis as any).__HF_ACCESS_TOKEN;
+    if (typeof globalToken === 'string' && globalToken.trim().length > 0) {
+      return globalToken.trim();
+    }
+
+    const envToken = (globalThis as any)?.hf?.env?.accessToken;
+    if (typeof envToken === 'string' && envToken.trim().length > 0) {
+      return envToken.trim();
+    }
+  }
+
+  return undefined;
 }
 
 // Utility to get the token ID (first 10 chars, masked)
@@ -237,7 +297,7 @@ async function tokenizeWithTiktokenModel(model: ModelInfo, text: string): Promis
   const tokenCount = ids.length;
   const safeDivisor = Math.max(1, tokenCount);
   const avgTokenChars = displayTokens.reduce((sum, token) => {
-    const cleanTok = String(token || '').replace(/[␣⇥⏎]/g, ' ');
+    const cleanTok = String(token ?? '').replace(/[␣⇥⏎]/g, ' ');
     return sum + [...cleanTok].length;
   }, 0) / safeDivisor;
 
@@ -329,24 +389,19 @@ export async function displayTokensFor(
 
 // Wait for Transformers.js to load
 function waitForTransformers(): Promise<any> {
-  return new Promise((resolve, reject) => {
-    if ((window as any).hf) {
-      resolve((window as any).hf);
-      return;
-    }
+  const existing = readHfGlobal();
+  if (existing?.env && existing?.AutoTokenizer) {
+    return Promise.resolve(existing);
+  }
 
-    let attempts = 0;
-    const checkInterval = setInterval(() => {
-      attempts++;
-      if ((window as any).hf) {
-        clearInterval(checkInterval);
-        resolve((window as any).hf);
-      } else if (attempts > 100) { // 10 seconds timeout
-        clearInterval(checkInterval);
-        reject(new Error('Transformers.js failed to load'));
-      }
-    }, 100);
-  });
+  if (!transformersLoadPromise) {
+    transformersLoadPromise = loadTransformersFromCdn().catch((error) => {
+      transformersLoadPromise = null;
+      throw error;
+    });
+  }
+
+  return transformersLoadPromise;
 }
 
 export type ModelCategory = 'basic' | 'indian' | 'frontier';
@@ -395,7 +450,11 @@ function isLikelyGatedRepo(repo: string): boolean {
 async function preflightHFRepoAccess(repo: string, hfToken?: string): Promise<void> {
   try {
     const url = `https://huggingface.co/${repo}/resolve/main/tokenizer_config.json`;
-    const res = await fetch(url, { method: 'HEAD' });
+    const headers = new Headers();
+    if (hfToken) {
+      headers.set('Authorization', `Bearer ${hfToken}`);
+    }
+    const res = await fetch(url, { method: 'HEAD', headers });
     if (res.status === 401 || res.status === 403) {
       const masked = hfToken ? `${hfToken.slice(0, 10)}...` : 'none';
       throw new Error(
@@ -524,31 +583,30 @@ export async function tokenizeOnce(repo: string, text: string): Promise<Tokeniza
     const graphemes = segmenter
       ? [...segmenter.segment(sanitized)].length
       : [...sanitized].length;
-    const bytes = new TextEncoder().encode(sanitized).length;
-    const t = Math.max(1, ids.length);
-    const avgTokenChars = displayTokens.reduce((s, tok) => {
-      const cleanTok = String(tok || '').replace(/[␣⇥⏎]/g, ' ');
-      return s + [...cleanTok].length;
-    }, 0) / t;
+    const byteCount = new TextEncoder().encode(sanitized).length;
+    const tokenCount = ids.length;
+    const safeDivisor = Math.max(1, tokenCount);
+    const avgTokenChars = displayTokens.reduce((sum, token) => {
+      const cleanTok = String(token ?? '').replace(/[␣⇥⏎]/g, ' ');
+      return sum + [...cleanTok].length;
+    }, 0) / safeDivisor;
 
-    // Calculate UNK percentage - check both tokenStrings and displayTokens
-    let unkCount = 0;
-    if (tokenStrings) {
-      console.log('TokenStrings for UNK check:', tokenStrings);
-      unkCount = tokenStrings.filter(token => 
-        token === '[UNK]' || token === '<unk>' || token === '�' || token.includes('[UNK]')
-      ).length;
+    const potentialUnkTokens = ['[UNK]', '<unk>', '<UNK>'];
+    const unkIds = new Set<number>();
+    if (typeof (tok as any)?.token_to_id === 'function') {
+      for (const candidate of potentialUnkTokens) {
+        try {
+          const resolved = (tok as any).token_to_id(candidate);
+          if (typeof resolved === 'number' && resolved >= 0) {
+            unkIds.add(resolved);
+          }
+        } catch (error) {
+          console.warn('token_to_id lookup failed for', candidate, error);
+        }
+      }
     }
-    // Also check displayTokens for UNK patterns as fallback (including decoding failures)
-    if (unkCount === 0) {
-      console.log('DisplayTokens for UNK check:', displayTokens);
-      unkCount = displayTokens.filter(token => 
-        token.includes('[UNK]') || token === '[UNK]' || token === '<unk>' || 
-        token === '�' || token.includes('<UNK>') || token === '⍰'
-      ).length;
-    }
-    console.log(`UNK count: ${unkCount} out of ${ids.length} tokens`);
-    const unkPercentage = ids.length > 0 ? (unkCount / ids.length) * 100 : 0;
+    const unkCount = unkIds.size > 0 ? ids.filter((id) => unkIds.has(id)).length : 0;
+    const unkPercentage = (unkCount / safeDivisor) * 100;
 
     return {
       ids,
@@ -556,11 +614,11 @@ export async function tokenizeOnce(repo: string, text: string): Promise<Tokeniza
       tokenStrings,
       offsets: offsets.length === ids.length ? offsets : undefined,
       metrics: {
-        tokenCount: ids.length,
+        tokenCount,
         charCount: graphemes,
-        byteCount: bytes,
-        tokensPer100Chars: (ids.length / Math.max(1, graphemes)) * 100,
-        bytesPerToken: bytes / t,
+        byteCount,
+        tokensPer100Chars: (tokenCount / Math.max(1, graphemes)) * 100,
+        bytesPerToken: byteCount / safeDivisor,
         avgTokenLength: avgTokenChars,
         unkCount,
         unkPercentage

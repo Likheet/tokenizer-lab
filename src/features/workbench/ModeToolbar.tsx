@@ -160,6 +160,14 @@ export function ModeToolbar({
           </span>
         ),
         value: 'batch'
+      },
+      {
+        label: (
+          <span className="flex items-center gap-2 text-xs uppercase tracking-wide">
+            <Sparkles className="h-4 w-4" /> Auto
+          </span>
+        ),
+        value: 'auto'
       }
     ],
     []

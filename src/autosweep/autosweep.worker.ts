@@ -130,6 +130,14 @@ function createSweepPlan(
     .map((axis) => ({ axis, values: sweeps[axis] ?? [] }))
 }
 
+function formatAxisValue(axis: SweepAxis, value: number | string): number | string {
+  if (axis === 'ascii_ratio' || axis === 'emoji_count' || axis === 'perturbations') {
+    const numeric = typeof value === 'number' ? value : Number(value)
+    return Number.isFinite(numeric) ? numeric : value
+  }
+  return String(value)
+}
+
 function resolvePresetConfig(config: AutoSweepJobConfig) {
   if (config.preset === 'custom') {
     return {
@@ -189,7 +197,7 @@ async function processMutation(
     langTag: string
     templateId: string
     sweepAxis: string
-    xValue: string
+    xValue: string | number
   },
   tokenizerFamily: string | null,
   tokenizerVocabSize: number | null,
@@ -265,6 +273,7 @@ async function processMutation(
     avg_token_len_graphemes: Number(avgTokenLen.toFixed(6)),
     unk_count: unkCount,
     unk_percent: Number(unkPercent.toFixed(6)),
+    timed_op: 'encode',
     time_ms_median: Number(medianValue.toFixed(3)),
     time_ms_mad: Number(madValue.toFixed(3)),
     repeats,
@@ -286,6 +295,12 @@ async function processMutation(
 }
 
 async function handleStart(config: AutoSweepJobConfig) {
+  if (config.accessToken) {
+    ;(globalThis as any).__HF_ACCESS_TOKEN = config.accessToken
+  } else {
+    delete (globalThis as any).__HF_ACCESS_TOKEN
+  }
+
   const presetConfig = resolvePresetConfig(config)
   const sweeps = presetConfig.sweeps
   const enabledAxes = config.enabledAxes.filter((axis) => sweeps[axis]?.length)
@@ -333,7 +348,7 @@ async function handleStart(config: AutoSweepJobConfig) {
     for (const { index, text } of sampled) {
       const slice = tagSlice(text)
       const langTag = inferLanguageTag(slice, text)
-      const templateId = 	emplate-
+      const templateId = `template-${index}`
 
       const baselineSettings: AutoSweepMutationSettings = { ...cloneBaseline() }
       const baselineRng = new SeededRng(hashSeed(seed, tokenizerId, index, 'baseline'))
@@ -368,7 +383,6 @@ async function handleStart(config: AutoSweepJobConfig) {
           const row = await processMutation(
             tokenizerId,
             tokenizerDisplayName,
-            settings,
             mutated,
             runtimeConfig.repeats,
             {
@@ -376,7 +390,7 @@ async function handleStart(config: AutoSweepJobConfig) {
               langTag,
               templateId,
               sweepAxis: axis,
-              xValue: String(value)
+              xValue: formatAxisValue(axis, value)
             },
             tokenizerFamily,
             tokenizerVocabSize,
