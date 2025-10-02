@@ -1,4 +1,10 @@
-import { tokenizeOnce, AVAILABLE_MODELS } from '../tokenizers'
+import {
+  tokenizeOnce,
+  tokenizeForTiming,
+  AVAILABLE_MODELS,
+  getTokenizerEncodeHandle,
+  sanitizeAndValidateInput
+} from '../tokenizers'
 import { tagSlice, inferLanguageTag, getProvenanceInfo } from '../compare'
 import { AUTOSWEEP_PRESETS, DEFAULT_BASELINE_SETTINGS } from './presets'
 import { mutateLine } from './mutations'
@@ -20,6 +26,8 @@ import type { TokenizationResult } from '../tokenizers'
 type WorkerRequest = { type: 'start'; payload: AutoSweepJobConfig }
 
 const DEFAULT_FLUSH_EVERY = 200
+
+const warmedTokenizers = new Set<string>()
 
 function cloneBaseline(): AutoSweepMutationSettings {
   return { ...DEFAULT_BASELINE_SETTINGS }
@@ -171,7 +179,8 @@ function buildProvenancePayload(
     tokenizers: string[]
     enabledAxes: SweepAxis[]
     seed: number
-  }
+  },
+  extras: Record<string, unknown> = {}
 ) {
   return {
     ...provenance,
@@ -183,7 +192,8 @@ function buildProvenancePayload(
       tokenizers: runtimeConfig.tokenizers,
       enabled_axes: runtimeConfig.enabledAxes,
       seed: runtimeConfig.seed
-    }
+    },
+    ...extras
   }
 }
 
@@ -211,34 +221,54 @@ async function processMutation(
     seed: number
   }
 ): Promise<AutoSweepCsvRow> {
-  await tokenizeOnce(tokenizerId, mutated.text)
+  const sanitizedText = sanitizeAndValidateInput(mutated.text)
+  mutated.text = sanitizedText
 
-  const durations: number[] = []
-  let lastResult: TokenizationResult | null = null
+  const measurementRepeats = Math.max(repeats, 5)
 
-  for (let i = 0; i < repeats; i += 1) {
+  const resultForMetrics: TokenizationResult = await tokenizeOnce(tokenizerId, sanitizedText)
+  const encodeHandle = await getTokenizerEncodeHandle(tokenizerId)
+  const preparedText = encodeHandle.preprocess ? encodeHandle.preprocess(sanitizedText) : sanitizedText
+
+  const measureLatency = async (loops: number) => {
     const start = performance.now()
-    const measurement = await tokenizeOnce(tokenizerId, mutated.text)
+    for (let i = 0; i < loops; i += 1) {
+      const outcome = encodeHandle.encode(preparedText)
+      if (outcome && typeof (outcome as any).then === 'function') {
+        await outcome
+      }
+    }
     const end = performance.now()
-    durations.push(end - start)
-    lastResult = measurement
+    return (end - start) / loops
   }
 
-  if (!lastResult) {
-    throw new Error('Tokenization result unavailable after timing loop')
+  const durations: number[] = []
+  let loopsPerMeasurement = 1
+  const trialDuration = await measureLatency(1)
+
+  if (trialDuration < 0.5) {
+    loopsPerMeasurement = 100
+    for (let i = 0; i < measurementRepeats; i += 1) {
+      durations.push(await measureLatency(loopsPerMeasurement))
+    }
+  } else {
+    durations.push(trialDuration)
+    for (let i = 1; i < measurementRepeats; i += 1) {
+      durations.push(await measureLatency(loopsPerMeasurement))
+    }
   }
 
   const medianValue = median(durations)
   const madValue = medianAbsoluteDeviation(durations, medianValue)
   const includeRuns = shouldCaptureTimingRuns(durations, medianValue)
 
-  const tokenCount = lastResult.metrics.tokenCount
-  const graphemeCount = lastResult.metrics.charCount
-  const byteCount = lastResult.metrics.byteCount
+  const tokenCount = resultForMetrics.metrics.tokenCount
+  const graphemeCount = resultForMetrics.metrics.charCount
+  const byteCount = resultForMetrics.metrics.byteCount
   const tokensPer100 = graphemeCount > 0 ? (tokenCount / Math.max(1, graphemeCount)) * 100 : 0
   const avgTokenLen = tokenCount > 0 ? graphemeCount / tokenCount : 0
-  const unkCount = lastResult.metrics.unkCount ?? 0
-  const unkPercent = lastResult.metrics.unkPercentage ?? (tokenCount > 0 ? (unkCount / tokenCount) * 100 : 0)
+  const unkCount = resultForMetrics.metrics.unkCount ?? 0
+  const unkPercent = resultForMetrics.metrics.unkPercentage ?? (tokenCount > 0 ? (unkCount / tokenCount) * 100 : 0)
 
   const provenance = getProvenanceInfo(tokenizerId, {
     displayName: tokenizerDisplayName,
@@ -248,10 +278,14 @@ async function processMutation(
     normalization: mutated.normalization,
     timingRuns: includeRuns ? durations : undefined
   })
-
-  const provenanceJson = JSON.stringify(
-    buildProvenancePayload(provenance, runtimeConfig)
-  )
+  const provenancePayload = buildProvenancePayload(provenance, runtimeConfig, {
+    cache_mode: 'job_warm_cache',
+    encode_steady_state: {
+      loops_per_repeat: loopsPerMeasurement,
+      repeats: measurementRepeats
+    }
+  })
+  const provenanceJson = JSON.stringify(provenancePayload)
 
   return {
     slice: context.slice,
@@ -269,14 +303,14 @@ async function processMutation(
     add_special_tokens: false,
     token_count: tokenCount,
     tokens_per_100_chars: Number(tokensPer100.toFixed(6)),
-    bytes_per_token: Number(lastResult.metrics.bytesPerToken.toFixed(6)),
+    bytes_per_token: Number(resultForMetrics.metrics.bytesPerToken.toFixed(6)),
     avg_token_len_graphemes: Number(avgTokenLen.toFixed(6)),
     unk_count: unkCount,
     unk_percent: Number(unkPercent.toFixed(6)),
-    timed_op: 'encode',
+    timed_op: 'encode_steady_state',
     time_ms_median: Number(medianValue.toFixed(3)),
     time_ms_mad: Number(madValue.toFixed(3)),
-    repeats,
+    repeats: measurementRepeats,
     normalization: mutated.normalization,
     zwj_applied: mutated.zwjApplied,
     url_applied: mutated.urlApplied,
@@ -307,10 +341,13 @@ async function handleStart(config: AutoSweepJobConfig) {
   const flushEvery = config.flushEvery ?? DEFAULT_FLUSH_EVERY
   const seed = config.seed ?? hashSeed(config.jobId, config.lines.length, config.tokenizers.join(','))
 
+  const requestedRepeats = config.repeats ?? presetConfig.repeats
+  const runtimeRepeats = Math.max(requestedRepeats, 5)
+
   const runtimeConfig = {
     preset: config.preset,
     sampleLines: presetConfig.sampleLines,
-    repeats: config.repeats ?? presetConfig.repeats,
+    repeats: runtimeRepeats,
     sweeps,
     tokenizers: config.tokenizers,
     enabledAxes,
@@ -344,6 +381,11 @@ async function handleStart(config: AutoSweepJobConfig) {
     const tokenizerDisplayName = model?.shortName ?? model?.name ?? tokenizerId
     const tokenizerFamily = model?.family ?? null
     const tokenizerVocabSize = typeof model?.vocabSize === 'number' ? model.vocabSize : null
+
+    if (!warmedTokenizers.has(tokenizerId)) {
+      await tokenizeForTiming(tokenizerId, 'warmup')
+      warmedTokenizers.add(tokenizerId)
+    }
 
     for (const { index, text } of sampled) {
       const slice = tagSlice(text)

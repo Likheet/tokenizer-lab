@@ -187,6 +187,8 @@ const LOCAL_TIKTOKEN_ENCODINGS: Record<string, () => Promise<TiktokenEncoderConf
 
 let tiktokenInitPromise: Promise<void> | null = null;
 const tiktokenCache = new Map<string, Promise<Tiktoken>>();
+const transformersTokenizerCache = new Map<string, Promise<any>>();
+const gatedRepoPreflightCache = new Set<string>();
 
 async function instantiateWasm(imports: WebAssembly.Imports) {
   if (typeof WebAssembly.instantiateStreaming === 'function') {
@@ -404,6 +406,15 @@ function waitForTransformers(): Promise<any> {
   return transformersLoadPromise;
 }
 
+export function sanitizeAndValidateInput(input: unknown): string {
+  const rawText = String(input ?? '');
+  const sanitized = rawText.replace(/[\u0000-\u001F\u007F-\u009F]/g, '');
+  if (!sanitized.trim()) {
+    throw new Error('Empty text provided');
+  }
+  return sanitized;
+}
+
 export type ModelCategory = 'basic' | 'indian' | 'frontier';
 export type ModelImplementation = 'transformers' | 'tiktoken';
 export type TokenizerFamily = 'WordPiece' | 'SentencePiece' | 'ByteBPE' | 'Tiktoken' | 'Unspecified';
@@ -491,17 +502,139 @@ export const AVAILABLE_MODELS: ModelInfo[] = [
   { id: 'mistralai/Mistral-7B-Instruct-v0.3', name: 'Mistral 7B Instruct v0.3', shortName: 'Mistral', category: 'frontier', implementation: 'transformers', family: 'SentencePiece', vocabSize: null }
 ];
 
+interface TransformersTokenizerContext {
+  modelName: string;
+  hfToken?: string | null;
+}
+
+async function getTransformersTokenizer(
+  repo: string,
+  AutoTokenizer: any,
+  context: TransformersTokenizerContext
+): Promise<any> {
+  const cached = transformersTokenizerCache.get(repo);
+  if (cached) {
+    return cached;
+  }
+
+  const loadPromise = (async () => {
+    console.log(`Loading tokenizer via Transformers.js: ${repo}`);
+    try {
+      const tok = await AutoTokenizer.from_pretrained(repo);
+      console.log(`Tokenizer loaded successfully: ${repo}`);
+      return tok;
+    } catch (error: any) {
+      const errorMessage = error?.message ?? String(error);
+      console.error(`Failed to load tokenizer ${repo}:`, errorMessage);
+
+      if (/Unauthorized|401|403/.test(errorMessage)) {
+        if (!context.hfToken) {
+          throw new Error(
+            `Access to ${context.modelName} requires a Hugging Face token. Paste a valid token in the "HF token" field (kept locally) and try again.`
+          );
+        }
+        const snippet = context.hfToken.slice(0, 10);
+        throw new Error(
+          `Access to ${context.modelName} was denied. Your HF token (${snippet}...) may lack per-repository access. Visit https://huggingface.co/${repo} and click "Agree and Access" (must be the same account the token belongs to).`
+        );
+      }
+
+      throw error;
+    }
+  })();
+
+  loadPromise.catch(() => {
+    transformersTokenizerCache.delete(repo);
+  });
+
+  transformersTokenizerCache.set(repo, loadPromise);
+  return loadPromise;
+}
+
+async function ensureTransformersTokenizer(model: ModelInfo): Promise<any> {
+  const repo = model.id;
+  const hf = await waitForTransformers();
+  const { AutoTokenizer, env } = hf;
+
+  const hfToken = readStoredHfToken();
+  console.log(`Using HF token: ${hfToken ? hfToken.slice(0, 10) + '...' : 'none'}`);
+  if (hfToken) {
+    env.accessToken = hfToken;
+    console.log('Set Transformers.js environment access token');
+  }
+
+  if (isLikelyGatedRepo(repo) && !gatedRepoPreflightCache.has(repo)) {
+    try {
+      await preflightHFRepoAccess(repo, hfToken ?? undefined);
+      gatedRepoPreflightCache.add(repo);
+    } catch (e: any) {
+      console.error(`Preflight access check failed for ${repo}:`, e?.message || e);
+      throw e;
+    }
+  }
+
+  return getTransformersTokenizer(repo, AutoTokenizer, { modelName: model.name, hfToken });
+}
+
+export interface TokenizerEncodeHandle {
+  implementation: ModelImplementation;
+  encode: (text: string) => unknown;
+  preprocess?: (text: string) => string;
+}
+
+export async function getTokenizerEncodeHandle(repo: string): Promise<TokenizerEncodeHandle> {
+  const model = AVAILABLE_MODELS.find((m) => m.id === repo);
+  if (!model) {
+    throw new Error(`Tokenizer ${repo} is not available in this lab.`);
+  }
+
+  const implementation = model.implementation ?? 'transformers';
+  if (implementation === 'tiktoken') {
+    if (!model.encoding) {
+      throw new Error(`Model ${model.id} is missing a tiktoken encoding identifier.`);
+    }
+    const tokenizer = await getTiktokenEncoding(model.encoding);
+    return {
+      implementation,
+      preprocess: (value: string) => value.normalize('NFKC'),
+      encode: (value: string) => tokenizer.encode(value, 'all')
+    };
+  }
+
+  const tok = await ensureTransformersTokenizer(model);
+  return {
+    implementation,
+    encode: (value: string) => tok.encode(value, undefined, { add_special_tokens: false } as any)
+  };
+}
+
+export async function tokenizeForTiming(repo: string, text: string): Promise<void> {
+  const model = AVAILABLE_MODELS.find((m) => m.id === repo);
+  if (!model) {
+    throw new Error(`Tokenizer ${repo} is not available in this lab.`);
+  }
+
+  const sanitized = sanitizeAndValidateInput(text);
+  try {
+    const handle = await getTokenizerEncodeHandle(repo);
+    const prepared = handle.preprocess ? handle.preprocess(sanitized) : sanitized;
+    const result = handle.encode(prepared);
+    if (result && typeof (result as any).then === 'function') {
+      await result;
+    }
+  } catch (error) {
+    console.error(`Error timing tokenizer ${repo}:`, error);
+    throw error;
+  }
+}
+
 export async function tokenizeOnce(repo: string, text: string): Promise<TokenizationResult> {
   const model = AVAILABLE_MODELS.find((m) => m.id === repo);
   if (!model) {
     throw new Error(`Tokenizer ${repo} is not available in this lab.`);
   }
 
-  const rawText = String(text ?? '');
-  const sanitized = rawText.replace(/[\u0000-\u001F\u007F-\u009F]/g, '');
-  if (!sanitized.trim()) {
-    throw new Error('Empty text provided');
-  }
+  const sanitized = sanitizeAndValidateInput(text);
 
   const implementation = model.implementation ?? 'transformers';
   if (implementation === 'tiktoken') {
@@ -509,47 +642,7 @@ export async function tokenizeOnce(repo: string, text: string): Promise<Tokeniza
   }
 
   try {
-    const hf = await waitForTransformers();
-    const { AutoTokenizer, env } = hf;
-
-    console.log(`Loading tokenizer via Transformers.js: ${repo}`);
-
-    const hfToken = readStoredHfToken();
-    console.log(`Using HF token: ${hfToken ? hfToken.slice(0, 10) + '...' : 'none'}`);
-    
-    // Set the token globally on Transformers.js environment
-    if (hfToken) {
-      env.accessToken = hfToken;
-      console.log('Set Transformers.js environment access token');
-    }
-
-    // For likely gated repos, run a preflight access check for clearer errors
-    if (isLikelyGatedRepo(repo)) {
-      try {
-        await preflightHFRepoAccess(repo, hfToken);
-      } catch (e: any) {
-        console.error(`Preflight access check failed for ${repo}:`, e?.message || e);
-        throw e;
-      }
-    }
-
-    let tok: any;
-    try {
-      tok = await AutoTokenizer.from_pretrained(repo);
-    } catch (error: any) {
-      const errorMessage = error?.message ?? String(error);
-      console.error(`Failed to load tokenizer ${repo}:`, errorMessage);
-      
-      if (/Unauthorized|401|403/.test(errorMessage)) {
-        if (!hfToken) {
-          throw new Error(`Access to ${model.name} requires a Hugging Face token. Paste a valid token in the "HF token" field (kept locally) and try again.`);
-        } else {
-          throw new Error(`Access to ${model.name} was denied. Your HF token (${hfToken.slice(0, 10)}...) may lack per-repository access. Visit https://huggingface.co/${repo} and click "Agree and Access" (must be the same account the token belongs to).`);
-        }
-      }
-      throw error;
-    }
-    console.log(`Tokenizer loaded successfully: ${repo}`);
+    const tok = await ensureTransformersTokenizer(model);
 
     // Try to encode with offsets first, fallback to basic encoding
     let enc: any;
