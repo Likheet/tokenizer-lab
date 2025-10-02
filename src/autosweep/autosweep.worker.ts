@@ -5,7 +5,7 @@ import {
   getTokenizerEncodeHandle,
   sanitizeAndValidateInput
 } from '../tokenizers'
-import { tagSlice, inferLanguageTag, getProvenanceInfo } from '../compare'
+import { tagSlice, inferLanguageTag, getProvenanceInfo, type Slice } from '../compare'
 import { AUTOSWEEP_PRESETS, DEFAULT_BASELINE_SETTINGS } from './presets'
 import { mutateLine } from './mutations'
 import { SeededRng, hashSeed } from './rng'
@@ -16,9 +16,10 @@ import type {
   SweepAxis,
   AutoSweepMutationSettings,
   AutoSweepProgressMessage,
-  AutoSweepDoneMessage
+  AutoSweepDoneMessage,
+  AxisSampleLines,
+  AutoSweepRowContext
 } from './types'
-import type { Slice } from '../compare'
 import type { TokenizationResult } from '../tokenizers'
 
 /// <reference lib="webworker" />
@@ -28,6 +29,8 @@ type WorkerRequest = { type: 'start'; payload: AutoSweepJobConfig }
 const DEFAULT_FLUSH_EVERY = 200
 
 const warmedTokenizers = new Set<string>()
+const DEBUG_SAMPLES_PER_COMBO = 3
+const DEBUG_TOKEN_CAPTURE_LIMIT = 64
 
 function cloneBaseline(): AutoSweepMutationSettings {
   return { ...DEFAULT_BASELINE_SETTINGS }
@@ -91,29 +94,67 @@ function medianAbsoluteDeviation(values: number[], medianValue: number): number 
   return median(deviations)
 }
 
+function shuffleInPlace<T>(items: T[], rng: SeededRng): void {
+  for (let i = items.length - 1; i > 0; i -= 1) {
+    const j = rng.nextInt(i + 1)
+    ;[items[i], items[j]] = [items[j], items[i]]
+  }
+}
+
 function sampleLines(
   lines: string[],
   sampleCount: number,
   rng: SeededRng
 ): { index: number; text: string }[] {
-  const filtered: { index: number; text: string }[] = []
+  const filtered: { index: number; text: string; slice: Slice }[] = []
   lines.forEach((line, index) => {
     const trimmed = line.trim()
     if (trimmed.length) {
-      filtered.push({ index, text: trimmed })
+      const slice = tagSlice(trimmed)
+      filtered.push({ index, text: trimmed, slice })
     }
   })
 
   if (filtered.length <= sampleCount) {
-    return filtered
+    return filtered.map(({ index, text }) => ({ index, text }))
   }
 
-  const indices = filtered.map((_, idx) => idx)
-  for (let i = indices.length - 1; i > 0; i -= 1) {
-    const j = rng.nextInt(i + 1)
-    ;[indices[i], indices[j]] = [indices[j], indices[i]]
+  const groups = new Map<Slice, { index: number; text: string }[]>()
+  for (const entry of filtered) {
+    if (!groups.has(entry.slice)) {
+      groups.set(entry.slice, [])
+    }
+    groups.get(entry.slice)!.push({ index: entry.index, text: entry.text })
   }
-  return indices.slice(0, sampleCount).map((idx) => filtered[idx])
+
+  const sliceEntries = Array.from(groups.entries())
+  shuffleInPlace(sliceEntries, rng)
+
+  const sliceCount = sliceEntries.length || 1
+  const basePerSlice = Math.floor(sampleCount / sliceCount)
+  let remainder = sampleCount - basePerSlice * sliceCount
+  const result: { index: number; text: string }[] = []
+
+  for (const [slice, items] of sliceEntries) {
+    const pool = [...items]
+    shuffleInPlace(pool, rng)
+    const allowance = basePerSlice + (remainder > 0 ? 1 : 0)
+    const take = Math.min(pool.length, Math.max(allowance, 0))
+    if (remainder > 0) {
+      remainder -= 1
+    }
+    result.push(...pool.slice(0, take))
+    groups.set(slice, pool.slice(take))
+  }
+
+  if (result.length < sampleCount) {
+    const leftovers = Array.from(groups.values()).flat()
+    shuffleInPlace(leftovers, rng)
+    const needed = sampleCount - result.length
+    result.push(...leftovers.slice(0, needed))
+  }
+
+  return result.slice(0, sampleCount)
 }
 
 function normalizeConfigSweeps(sweeps: AutoSweepJobConfig['sweeps']): Required<AutoSweepJobConfig['sweeps']> {
@@ -125,6 +166,50 @@ function normalizeConfigSweeps(sweeps: AutoSweepJobConfig['sweeps']): Required<A
     zwj_on: sweeps.zwj_on?.slice() ?? [],
     perturbations: sweeps.perturbations?.slice() ?? []
   }
+}
+
+function normalizeAxisSampleLines(map?: AxisSampleLines): AxisSampleLines {
+  if (!map) return {}
+  const result: AxisSampleLines = {}
+  for (const [rawAxis, rawValue] of Object.entries(map)) {
+    const axis = rawAxis as SweepAxis
+    const value = Number(rawValue)
+    if (Number.isFinite(value) && value > 0) {
+      result[axis] = Math.max(1, Math.floor(value))
+    }
+  }
+  return result
+}
+
+function measureAsciiBytes(text: string): { asciiBytes: number; totalBytes: number; ratio: number } {
+  const encoder = new TextEncoder()
+  const bytes = encoder.encode(text)
+  if (!bytes.length) {
+    return { asciiBytes: 0, totalBytes: 0, ratio: 0 }
+  }
+  let asciiBytes = 0
+  for (const byte of bytes) {
+    if (byte <= 0x7f) {
+      asciiBytes += 1
+    }
+  }
+  return { asciiBytes, totalBytes: bytes.length, ratio: asciiBytes / bytes.length }
+}
+
+function isBaselineClean(mutated: ReturnType<typeof mutateLine>): boolean {
+  return (
+    mutated.normalization === 'NFC' &&
+    mutated.zwjApplied === 0 &&
+    mutated.urlApplied === 0 &&
+    mutated.emojiCount === 0 &&
+    mutated.perturbations === 0
+  )
+}
+
+function hasLatinAndDevanagari(text: string): boolean {
+  const hasLatin = /[A-Za-z]/.test(text)
+  const hasDevanagari = /[\u0900-\u097F]/.test(text)
+  return hasLatin && hasDevanagari
 }
 
 function createSweepPlan(
@@ -151,10 +236,15 @@ function resolvePresetConfig(config: AutoSweepJobConfig) {
     return {
       sampleLines: config.sampleLines ?? config.lines.length,
       repeats: config.repeats,
-      sweeps: normalizeConfigSweeps(config.sweeps)
+      sweeps: normalizeConfigSweeps(config.sweeps),
+      axisSampleLines: normalizeAxisSampleLines(config.axisSampleLines)
     }
   }
   const preset = AUTOSWEEP_PRESETS[config.preset]
+  const combinedAxisSampleLines = {
+    ...(preset.axisSampleLines ?? {}),
+    ...(config.axisSampleLines ?? {})
+  }
   return {
     sampleLines: config.sampleLines ?? preset.sampleLines,
     repeats: config.repeats ?? preset.repeats,
@@ -165,7 +255,8 @@ function resolvePresetConfig(config: AutoSweepJobConfig) {
       normalize: config.sweeps.normalize ?? preset.sweeps.normalize,
       zwj_on: config.sweeps.zwj_on ?? preset.sweeps.zwj_on,
       perturbations: config.sweeps.perturbations ?? preset.sweeps.perturbations
-    })
+    }),
+    axisSampleLines: normalizeAxisSampleLines(combinedAxisSampleLines)
   }
 }
 
@@ -179,6 +270,7 @@ function buildProvenancePayload(
     tokenizers: string[]
     enabledAxes: SweepAxis[]
     seed: number
+    axisSampleLines: AxisSampleLines
   },
   extras: Record<string, unknown> = {}
 ) {
@@ -191,7 +283,8 @@ function buildProvenancePayload(
       sweeps: runtimeConfig.sweeps,
       tokenizers: runtimeConfig.tokenizers,
       enabled_axes: runtimeConfig.enabledAxes,
-      seed: runtimeConfig.seed
+      seed: runtimeConfig.seed,
+      axis_sample_lines: runtimeConfig.axisSampleLines
     },
     ...extras
   }
@@ -202,15 +295,10 @@ async function processMutation(
   tokenizerDisplayName: string,
   mutated: ReturnType<typeof mutateLine>,
   repeats: number,
-  context: {
-    slice: Slice
-    langTag: string
-    templateId: string
-    sweepAxis: string
-    xValue: string | number
-  },
+  context: AutoSweepRowContext,
   tokenizerFamily: string | null,
   tokenizerVocabSize: number | null,
+  debugTracker: Map<string, number>,
   runtimeConfig: {
     preset: 'fast' | 'full' | 'custom'
     sampleLines: number
@@ -219,10 +307,28 @@ async function processMutation(
     tokenizers: string[]
     enabledAxes: SweepAxis[]
     seed: number
+    axisSampleLines: AxisSampleLines
   }
 ): Promise<AutoSweepCsvRow> {
   const sanitizedText = sanitizeAndValidateInput(mutated.text)
   mutated.text = sanitizedText
+  const asciiStats = measureAsciiBytes(sanitizedText)
+  mutated.asciiRatio = asciiStats.ratio
+  const measuredAsciiRatio = Number(asciiStats.ratio.toFixed(6))
+  const xValue =
+    context.sweepAxis === 'ascii_ratio' ? measuredAsciiRatio : context.xValue
+  const resolvedTargetAsciiRatio = (() => {
+    if (context.sweepAxis !== 'ascii_ratio') return null
+    const candidate = context.targetXValue ?? context.xValue
+    if (typeof candidate === 'number' && Number.isFinite(candidate)) {
+      return Number(candidate)
+    }
+    if (typeof candidate === 'string') {
+      const parsed = Number(candidate)
+      return Number.isFinite(parsed) ? parsed : null
+    }
+    return null
+  })()
 
   const measurementRepeats = Math.max(repeats, 5)
 
@@ -263,17 +369,57 @@ async function processMutation(
   const includeRuns = shouldCaptureTimingRuns(durations, medianValue)
 
   const tokenCount = resultForMetrics.metrics.tokenCount
-  const graphemeCount = resultForMetrics.metrics.charCount
+  const graphemeCount = resultForMetrics.metrics.graphemeCount ?? resultForMetrics.metrics.charCount
+  const codePointCount = resultForMetrics.metrics.codePointCount ?? graphemeCount
   const byteCount = resultForMetrics.metrics.byteCount
-  const tokensPer100 = graphemeCount > 0 ? (tokenCount / Math.max(1, graphemeCount)) * 100 : 0
-  const avgTokenLen = tokenCount > 0 ? graphemeCount / tokenCount : 0
+  const tokensPer100 = resultForMetrics.metrics.tokensPer100Graphemes ?? resultForMetrics.metrics.tokensPer100Chars
+  const tokensPer100CodePoints = resultForMetrics.metrics.tokensPer100CodePoints ?? (codePointCount > 0 ? (tokenCount / codePointCount) * 100 : 0)
+  const avgTokenLen = resultForMetrics.metrics.avgTokenLength ?? (tokenCount > 0 ? graphemeCount / tokenCount : 0)
   const unkCount = resultForMetrics.metrics.unkCount ?? 0
   const unkPercent = resultForMetrics.metrics.unkPercentage ?? (tokenCount > 0 ? (unkCount / tokenCount) * 100 : 0)
+
+  const resultVocabSize = typeof resultForMetrics.vocabSize === 'number' && Number.isFinite(resultForMetrics.vocabSize)
+    ? resultForMetrics.vocabSize
+    : null
+  const effectiveVocabSize = resultVocabSize ?? (typeof tokenizerVocabSize === 'number' && Number.isFinite(tokenizerVocabSize) ? tokenizerVocabSize : null)
+  if (typeof effectiveVocabSize === 'number' && Number.isFinite(effectiveVocabSize)) {
+    const modelEntry = AVAILABLE_MODELS.find((entry) => entry.id === tokenizerId)
+    if (modelEntry) {
+      modelEntry.vocabSize = effectiveVocabSize
+    }
+  }
+
+  const resolvedUnkSamples = Array.isArray(resultForMetrics.unkTokenSamples) && resultForMetrics.unkTokenSamples.length
+    ? resultForMetrics.unkTokenSamples.slice(0, 10)
+    : undefined
+
+  const debugKey = `${tokenizerId}::${context.slice}`
+  const currentDebugCount = debugTracker.get(debugKey) ?? 0
+  let debugSampleRank: number | null = null
+  let debugTokenIdsJson: string | null = null
+  let debugTokenStringsJson: string | null = null
+  let debugTokensDisplayJson: string | null = null
+
+  if (currentDebugCount < DEBUG_SAMPLES_PER_COMBO) {
+    debugSampleRank = currentDebugCount + 1
+    debugTracker.set(debugKey, debugSampleRank)
+
+    const capturePayload = <T,>(values: readonly T[] | undefined, limit: number): string | null => {
+      if (!values) return null
+      const trimmed = values.slice(0, limit)
+      const truncated = values.length > limit
+      return JSON.stringify({ total: values.length, truncated, values: trimmed })
+    }
+
+    debugTokenIdsJson = capturePayload(resultForMetrics.ids, DEBUG_TOKEN_CAPTURE_LIMIT)
+    debugTokenStringsJson = capturePayload(resultForMetrics.tokenStrings, DEBUG_TOKEN_CAPTURE_LIMIT)
+    debugTokensDisplayJson = capturePayload(resultForMetrics.tokens, DEBUG_TOKEN_CAPTURE_LIMIT)
+  }
 
   const provenance = getProvenanceInfo(tokenizerId, {
     displayName: tokenizerDisplayName,
     family: tokenizerFamily,
-    vocabSize: tokenizerVocabSize,
+    vocabSize: effectiveVocabSize,
     addSpecialTokens: false,
     normalization: mutated.normalization,
     timingRuns: includeRuns ? durations : undefined
@@ -283,28 +429,42 @@ async function processMutation(
     encode_steady_state: {
       loops_per_repeat: loopsPerMeasurement,
       repeats: measurementRepeats
-    }
+    },
+    measured_ascii_ratio_bytes: measuredAsciiRatio,
+    target_ascii_ratio: resolvedTargetAsciiRatio,
+    ...(resolvedUnkSamples ? { unk_token_samples: resolvedUnkSamples } : {})
   })
   const provenanceJson = JSON.stringify(provenancePayload)
 
+  const fragEntropyValue = Number.isFinite(resultForMetrics.metrics.fragEntropy)
+    ? resultForMetrics.metrics.fragEntropy
+    : 0
   return {
     slice: context.slice,
     lang_tag: context.langTag,
     template_id: context.templateId,
     sweep_axis: context.sweepAxis,
-    x_value: context.xValue,
+    x_value: xValue,
+    target_ascii_ratio: resolvedTargetAsciiRatio,
     text: mutated.text,
+  debug_sample_rank: debugSampleRank,
+  debug_token_ids_json: debugTokenIdsJson,
+  debug_token_strings_json: debugTokenStringsJson,
+  debug_tokens_display_json: debugTokensDisplayJson,
     grapheme_count: graphemeCount,
+    code_point_count: codePointCount,
     byte_count: byteCount,
-    ascii_ratio_bytes: mutated.asciiRatio,
+    ascii_ratio_bytes: Number(asciiStats.ratio.toFixed(6)),
     tokenizer_id: tokenizerId,
     tokenizer_family: tokenizerFamily,
-    tokenizer_vocab_size: tokenizerVocabSize,
+  tokenizer_vocab_size: effectiveVocabSize,
     add_special_tokens: false,
     token_count: tokenCount,
     tokens_per_100_chars: Number(tokensPer100.toFixed(6)),
+    tokens_per_100_codepoints: Number(tokensPer100CodePoints.toFixed(6)),
     bytes_per_token: Number(resultForMetrics.metrics.bytesPerToken.toFixed(6)),
     avg_token_len_graphemes: Number(avgTokenLen.toFixed(6)),
+    frag_entropy: Number(fragEntropyValue.toFixed(6)),
     unk_count: unkCount,
     unk_percent: Number(unkPercent.toFixed(6)),
     timed_op: 'encode_steady_state',
@@ -340,9 +500,22 @@ async function handleStart(config: AutoSweepJobConfig) {
   const enabledAxes = config.enabledAxes.filter((axis) => sweeps[axis]?.length)
   const flushEvery = config.flushEvery ?? DEFAULT_FLUSH_EVERY
   const seed = config.seed ?? hashSeed(config.jobId, config.lines.length, config.tokenizers.join(','))
+  const axisSampleLines = presetConfig.axisSampleLines ?? {}
+  const debugSampleTracker = new Map<string, number>()
 
   const requestedRepeats = config.repeats ?? presetConfig.repeats
   const runtimeRepeats = Math.max(requestedRepeats, 5)
+
+  const axisSampleCounts = new Map<SweepAxis, number>()
+  let maxSampleLines = presetConfig.sampleLines
+  for (const axis of enabledAxes) {
+    const override = axisSampleLines[axis]
+    const count = Number.isFinite(override) && override ? override : presetConfig.sampleLines
+    axisSampleCounts.set(axis, count)
+    if (count > maxSampleLines) {
+      maxSampleLines = count
+    }
+  }
 
   const runtimeConfig = {
     preset: config.preset,
@@ -351,14 +524,48 @@ async function handleStart(config: AutoSweepJobConfig) {
     sweeps,
     tokenizers: config.tokenizers,
     enabledAxes,
-    seed
+    seed,
+    axisSampleLines
   }
 
   const samplingRng = new SeededRng(hashSeed(seed, 'sampling'))
-  const sampled = sampleLines(config.lines, runtimeConfig.sampleLines, samplingRng)
+  const masterSamples = sampleLines(config.lines, maxSampleLines, samplingRng)
+  const filteredMasterSamples = masterSamples.filter(({ index, text }) => {
+    const detectedSlice = tagSlice(text)
+    if (detectedSlice === 'Hinglish' && !hasLatinAndDevanagari(text)) {
+      console.warn(
+        `[autosweep] Dropping template ${index} assigned to Hinglish because it lacks dual Latin/Devanagari scripts.`
+      )
+      return false
+    }
+    return true
+  })
 
-  const totalPerLine = 1 + enabledAxes.reduce((sum, axis) => sum + (sweeps[axis]?.length ?? 0), 0)
-  const totalRows = sampled.length * runtimeConfig.tokenizers.length * totalPerLine
+  const baselineSamples = filteredMasterSamples.slice(
+    0,
+    Math.min(runtimeConfig.sampleLines, filteredMasterSamples.length)
+  )
+  const axisSamples = new Map<SweepAxis, { index: number; text: string }[]>()
+
+  for (const axis of enabledAxes) {
+    const desired = axisSampleCounts.get(axis) ?? runtimeConfig.sampleLines
+    if (desired <= baselineSamples.length) {
+      axisSamples.set(axis, baselineSamples.slice(0, desired))
+    } else {
+      axisSamples.set(
+        axis,
+        filteredMasterSamples.slice(0, Math.min(desired, filteredMasterSamples.length))
+      )
+    }
+  }
+
+  const rowsPerTokenizer = baselineSamples.length + enabledAxes.reduce((sum, axis) => {
+    const axisValues = sweeps[axis]?.length ?? 0
+    const axisLines = axisSamples.get(axis)?.length ?? 0
+    return sum + axisLines * axisValues
+  }, 0)
+
+  let totalRows = rowsPerTokenizer * runtimeConfig.tokenizers.length
 
   const startTime = performance.now()
   let processed = 0
@@ -372,7 +579,7 @@ async function handleStart(config: AutoSweepJobConfig) {
       total: totalRows,
       rows: chunk
     }
-    ;(self as unknown as DedicatedWorkerGlobalScope).postMessage(message)
+  ;(self as any).postMessage(message)
     chunk = []
   }
 
@@ -387,7 +594,7 @@ async function handleStart(config: AutoSweepJobConfig) {
       warmedTokenizers.add(tokenizerId)
     }
 
-    for (const { index, text } of sampled) {
+    for (const { index, text } of baselineSamples) {
       const slice = tagSlice(text)
       const langTag = inferLanguageTag(slice, text)
       const templateId = `template-${index}`
@@ -395,6 +602,13 @@ async function handleStart(config: AutoSweepJobConfig) {
       const baselineSettings: AutoSweepMutationSettings = { ...cloneBaseline() }
       const baselineRng = new SeededRng(hashSeed(seed, tokenizerId, index, 'baseline'))
       const baselineMutation = mutateLine(text, slice, baselineSettings, baselineRng)
+      if (!isBaselineClean(baselineMutation)) {
+        console.warn(
+          `[autosweep] Skipping baseline row for template ${templateId} due to hygiene violation.`
+        )
+        totalRows = Math.max(totalRows - 1, 0)
+        continue
+      }
       const baselineRow = await processMutation(
         tokenizerId,
         tokenizerDisplayName,
@@ -409,6 +623,7 @@ async function handleStart(config: AutoSweepJobConfig) {
         },
         tokenizerFamily,
         tokenizerVocabSize,
+        debugSampleTracker,
         runtimeConfig
       )
       chunk.push(baselineRow)
@@ -416,12 +631,24 @@ async function handleStart(config: AutoSweepJobConfig) {
       if (chunk.length >= flushEvery) {
         postChunk()
       }
+    }
 
-      for (const { axis, values } of createSweepPlan(sweeps, enabledAxes)) {
+    for (const { axis, values } of createSweepPlan(sweeps, enabledAxes)) {
+      const linesForAxis = axisSamples.get(axis) ?? baselineSamples
+      if (!values.length || !linesForAxis.length) {
+        continue
+      }
+
+      for (const { index, text } of linesForAxis) {
+        const slice = tagSlice(text)
+        const langTag = inferLanguageTag(slice, text)
+        const templateId = `template-${index}`
+
         for (const value of values) {
           const settings = mergeSettings(cloneBaseline(), axis, value)
           const axisRng = new SeededRng(hashSeed(seed, tokenizerId, index, axis, value))
           const mutated = mutateLine(text, slice, settings, axisRng)
+          const targetValue = formatAxisValue(axis, value)
           const row = await processMutation(
             tokenizerId,
             tokenizerDisplayName,
@@ -432,10 +659,12 @@ async function handleStart(config: AutoSweepJobConfig) {
               langTag,
               templateId,
               sweepAxis: axis,
-              xValue: formatAxisValue(axis, value)
+              xValue: targetValue,
+              targetXValue: targetValue
             },
             tokenizerFamily,
             tokenizerVocabSize,
+            debugSampleTracker,
             runtimeConfig
           )
           chunk.push(row)
@@ -456,10 +685,10 @@ async function handleStart(config: AutoSweepJobConfig) {
     total: totalRows,
     durationMs: performance.now() - startTime
   }
-  ;(self as unknown as DedicatedWorkerGlobalScope).postMessage(doneMessage)
+  ;(self as any).postMessage(doneMessage)
 }
 
-;(self as unknown as DedicatedWorkerGlobalScope).onmessage = async (event: MessageEvent<WorkerRequest>) => {
+;(self as any).onmessage = async (event: MessageEvent<WorkerRequest>) => {
   const { data } = event
   if (!data || data.type !== 'start') {
     return
@@ -472,6 +701,6 @@ async function handleStart(config: AutoSweepJobConfig) {
       message: error instanceof Error ? error.message : 'Unknown AutoSweep error',
       stack: error instanceof Error ? error.stack : undefined
     }
-    ;(self as unknown as DedicatedWorkerGlobalScope).postMessage(message)
+  ;(self as any).postMessage(message)
   }
 }

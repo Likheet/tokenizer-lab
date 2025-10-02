@@ -52,11 +52,13 @@ export interface MetricField {
 
 export const METRIC_FIELDS: MetricField[] = [
   { key: 'tokenCount', label: 'Tokens' },
-  { key: 'charCount', label: 'Characters' },
-  { key: 'byteCount', label: 'Bytes' },
-  { key: 'tokensPer100Chars', label: 'Tokens / 100 chars', format: (value) => value.toFixed(2) },
+  { key: 'graphemeCount', label: 'Graphemes' },
+  { key: 'codePointCount', label: 'Code points' },
+  { key: 'byteCount', label: 'UTF-8 bytes' },
+  { key: 'tokensPer100Graphemes', label: 'Tokens / 100 graphemes', format: (value) => value.toFixed(2) },
+  { key: 'tokensPer100CodePoints', label: 'Tokens / 100 code points', format: (value) => value.toFixed(2) },
   { key: 'bytesPerToken', label: 'Bytes / token', format: (value) => value.toFixed(2) },
-  { key: 'avgTokenLength', label: 'Avg. token length', format: (value) => value.toFixed(2) },
+  { key: 'avgTokenLength', label: 'Avg. token length (graphemes)', format: (value) => value.toFixed(2) },
   {
     key: 'unkPercentage',
     label: 'UNK %',

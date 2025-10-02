@@ -19,7 +19,7 @@ const AXIS_LABEL: Record<SweepAxis, string> = {
   emoji_count: 'Emoji count',
   url_on: 'URL flag',
   normalize: 'Normalization',
-  zwj_on: 'ZWJ flag',
+  zwj_on: 'Insert ZWJ variant',
   perturbations: 'Perturbations'
 }
 
@@ -28,7 +28,7 @@ const AXIS_HELP_TEXT: Record<SweepAxis, string> = {
   emoji_count: 'Comma separated integers representing appended emoji count.',
   url_on: '0 or 1 to control URL injection.',
   normalize: 'Normalization forms such as NFC or NFD.',
-  zwj_on: '0 or 1 to toggle ZWJ variants.',
+  zwj_on: '0 or 1 to insert Zero Width Joiner variants in consonant clusters.',
   perturbations: 'Comma separated integers for random perturbation count.'
 }
 
@@ -104,6 +104,7 @@ export interface AutoSweepRunRequest {
   repeats: number
   flushEvery: number
   seed?: number
+  axisSampleLines?: Partial<Record<SweepAxis, number>>
 }
 
 interface AutoSweepViewProps {
@@ -154,6 +155,9 @@ export function AutoSweepView({
     return new Set(AXIS_ORDER.filter((axis) => defaults[axis]?.trim().length))
   })
   const [sampleLines, setSampleLines] = useState<number>(AUTOSWEEP_PRESETS.fast.sampleLines)
+  const [axisSampleLines, setAxisSampleLines] = useState<Partial<Record<SweepAxis, number>>>(() => ({
+    ...(AUTOSWEEP_PRESETS.fast.axisSampleLines ?? {})
+  }))
   const [repeats, setRepeats] = useState<number>(AUTOSWEEP_PRESETS.fast.repeats)
   const [flushEvery, setFlushEvery] = useState<number>(200)
   const [seed, setSeed] = useState<string>('')
@@ -169,6 +173,7 @@ export function AutoSweepView({
     setAxisInputs(defaults)
     setAxisEnabled(new Set(AXIS_ORDER.filter((axis) => defaults[axis]?.trim().length)))
     setSampleLines(AUTOSWEEP_PRESETS[preset].sampleLines)
+    setAxisSampleLines({ ...(AUTOSWEEP_PRESETS[preset].axisSampleLines ?? {}) })
     setRepeats(AUTOSWEEP_PRESETS[preset].repeats)
   }, [preset])
 
@@ -187,20 +192,42 @@ export function AutoSweepView({
     return Number.isFinite(value) ? value : NaN
   }, [seed])
 
+  const sanitizedAxisSampleLines = useMemo(() => {
+    return Object.fromEntries(
+      Object.entries(axisSampleLines)
+        .map(([axis, value]) => [axis, Number(value)])
+        .filter(([, value]) => Number.isFinite(value) && value > 0)
+    ) as Partial<Record<SweepAxis, number>>
+  }, [axisSampleLines])
+
   const configPreview = useMemo(() => {
     const payload: Record<string, unknown> = {
       preset,
       sample_lines: sampleLines,
       repeats,
+      flush_every: flushEvery,
       sweeps,
       tokenizers: selectedTokenizers,
       enabled_axes: enabledAxes
+    }
+    if (Object.keys(sanitizedAxisSampleLines).length > 0) {
+      payload.axis_sample_lines = sanitizedAxisSampleLines
     }
     if (parsedSeed !== undefined && !Number.isNaN(parsedSeed)) {
       payload.seed = parsedSeed
     }
     return payload
-  }, [preset, sampleLines, repeats, sweeps, selectedTokenizers, enabledAxes, parsedSeed])
+  }, [
+    preset,
+    sampleLines,
+    repeats,
+    flushEvery,
+    sweeps,
+    selectedTokenizers,
+    enabledAxes,
+    sanitizedAxisSampleLines,
+    parsedSeed
+  ])
 
   const configJson = useMemo(() => JSON.stringify(configPreview, null, 2), [configPreview])
 
@@ -232,6 +259,21 @@ export function AutoSweepView({
 
   const handleSweepInput = useCallback((axis: SweepAxis, value: string) => {
     setAxisInputs((current) => ({ ...current, [axis]: value }))
+  }, [])
+
+  const handleAxisSampleLinesChange = useCallback((axis: SweepAxis, rawValue: string) => {
+    setAxisSampleLines((current) => {
+      const next = { ...current }
+      if (rawValue.trim().length === 0) {
+        delete next[axis]
+        return next
+      }
+      const numeric = Number(rawValue)
+      if (!Number.isFinite(numeric)) {
+        return next
+      }
+      return { ...next, [axis]: numeric }
+    })
   }, [])
 
   const handleFileChange = useCallback(
@@ -296,7 +338,8 @@ export function AutoSweepView({
       sampleLines,
       repeats,
       flushEvery,
-      seed: parsedSeed !== undefined && !Number.isNaN(parsedSeed) ? parsedSeed : undefined
+      seed: parsedSeed !== undefined && !Number.isNaN(parsedSeed) ? parsedSeed : undefined,
+      axisSampleLines: Object.keys(sanitizedAxisSampleLines).length ? sanitizedAxisSampleLines : undefined
     }
 
     onRun(request, configPreview)
@@ -310,6 +353,7 @@ export function AutoSweepView({
     sampleLines,
     repeats,
     flushEvery,
+    sanitizedAxisSampleLines,
     configPreview,
     onRun
   ])
@@ -410,6 +454,25 @@ export function AutoSweepView({
                   onChange={(event) => setSampleLines(Number(event.target.value) || 0)}
                   disabled={running}
                 />
+              </div>
+              <div className="space-y-2">
+                <Label
+                  htmlFor="ascii-sample-lines"
+                  className="text-xs uppercase tracking-wide text-muted-foreground"
+                >
+                  ASCII axis sample lines
+                </Label>
+                <Input
+                  id="ascii-sample-lines"
+                  type="number"
+                  min={1}
+                  value={axisSampleLines.ascii_ratio ?? ''}
+                  onChange={(event) => handleAxisSampleLinesChange('ascii_ratio', event.target.value)}
+                  disabled={running}
+                />
+                <p className="text-xs text-muted-foreground">
+                  Overrides per-bin sampling when the ASCII ratio axis is enabled. Leave blank to inherit.
+                </p>
               </div>
               <div className="space-y-2">
                 <Label htmlFor="sweep-repeats" className="text-xs uppercase tracking-wide text-muted-foreground">
@@ -628,21 +691,33 @@ export function AutoSweepView({
                     <th className="px-2 py-1">Timed op</th>
                     <th className="px-2 py-1">Tokenizer</th>
                     <th className="px-2 py-1 text-right">Tokens</th>
+                    <th className="px-2 py-1 text-right">Bytes/token</th>
                     <th className="px-2 py-1 text-right">Median ms</th>
+                    <th className="px-2 py-1">Debug</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {previewRows.map((row, index) => (
-                    <tr key={`${row.template_id}-${row.tokenizer_id}-${index}`} className="border-t border-border/60">
-                      <td className="px-2 py-1 font-mono">{row.template_id}</td>
-                      <td className="px-2 py-1">{row.sweep_axis}</td>
-                      <td className="px-2 py-1">{row.x_value}</td>
-                      <td className="px-2 py-1">{row.timed_op}</td>
-                      <td className="px-2 py-1">{row.tokenizer_id}</td>
-                      <td className="px-2 py-1 text-right">{row.token_count}</td>
-                      <td className="px-2 py-1 text-right">{row.time_ms_median.toFixed(2)}</td>
-                    </tr>
-                  ))}
+                  {previewRows.map((row, index) => {
+                    const isDebug = row.debug_sample_rank !== null && row.debug_sample_rank !== undefined
+                    return (
+                      <tr
+                        key={`${row.template_id}-${row.tokenizer_id}-${index}`}
+                        className={`${isDebug ? 'bg-amber-50/40' : ''} border-t border-border/60`}
+                      >
+                        <td className="px-2 py-1 font-mono">{row.template_id}</td>
+                        <td className="px-2 py-1">{row.sweep_axis}</td>
+                        <td className="px-2 py-1">{row.x_value}</td>
+                        <td className="px-2 py-1">{row.timed_op}</td>
+                        <td className="px-2 py-1">{row.tokenizer_id}</td>
+                        <td className="px-2 py-1 text-right">{row.token_count}</td>
+                        <td className="px-2 py-1 text-right">{row.bytes_per_token.toFixed(2)}</td>
+                        <td className="px-2 py-1 text-right">{row.time_ms_median.toFixed(2)}</td>
+                        <td className="px-2 py-1 text-xs font-medium text-amber-700">
+                          {isDebug ? `Debug #${row.debug_sample_rank}` : ''}
+                        </td>
+                      </tr>
+                    )
+                  })}
                 </tbody>
               </table>
             </div>

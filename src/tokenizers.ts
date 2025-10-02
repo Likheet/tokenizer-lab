@@ -11,6 +11,92 @@ const TRANSFORMERS_CDN_URL = `https://cdn.jsdelivr.net/npm/@xenova/transformers@
 
 let transformersLoadPromise: Promise<any> | null = null;
 
+let huggingFaceFetchPatched = false;
+
+function resolveRequestUrl(input: RequestInfo | URL): string | null {
+  if (typeof input === 'string') return input;
+  if (input instanceof URL) return input.toString();
+  if (typeof Request !== 'undefined' && input instanceof Request) {
+    return input.url;
+  }
+  return null;
+}
+
+function isLikelyHuggingFaceAsset(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    return parsed.hostname.toLowerCase().endsWith('huggingface.co') && parsed.pathname.includes('/resolve/');
+  } catch {
+    return false;
+  }
+}
+
+function appendDownloadQuery(url: string): string | null {
+  try {
+    const parsed = new URL(url);
+    if (parsed.searchParams.has('download')) {
+      return null;
+    }
+    parsed.searchParams.set('download', '1');
+    return parsed.toString();
+  } catch {
+    return null;
+  }
+}
+
+function createFallbackRequest(input: RequestInfo | URL, fallbackUrl: string): RequestInfo | URL {
+  if (typeof input === 'string' || input instanceof URL) {
+    return fallbackUrl;
+  }
+  if (typeof Request !== 'undefined' && input instanceof Request) {
+    return new Request(fallbackUrl, input);
+  }
+  return fallbackUrl;
+}
+
+function shouldRetryWithDownload(response: Response): boolean {
+  if (!response) return false;
+  if (!response.ok) return true;
+  const contentType = response.headers.get('content-type')?.toLowerCase() ?? '';
+  if (!contentType) return false;
+  return contentType.includes('text/html');
+}
+
+function patchFetchForHuggingFace(): void {
+  if (huggingFaceFetchPatched) return;
+  if (typeof fetch !== 'function') return;
+
+  const originalFetch = fetch.bind(globalThis);
+
+  const wrappedFetch: typeof fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = resolveRequestUrl(input);
+    let response = await originalFetch(input, init);
+
+    if (url && isLikelyHuggingFaceAsset(url) && shouldRetryWithDownload(response)) {
+      const fallbackUrl = appendDownloadQuery(url);
+      if (fallbackUrl && fallbackUrl !== url) {
+        try {
+          if (response.body && typeof response.body.cancel === 'function') {
+            await response.body.cancel();
+          }
+        } catch {
+          // ignore cancellation errors
+        }
+        console.warn(`Retrying Hugging Face fetch with download=1: ${url}`);
+        const fallbackInput = createFallbackRequest(input, fallbackUrl);
+        response = await originalFetch(fallbackInput, init);
+      }
+    }
+
+    return response;
+  };
+
+  globalThis.fetch = wrappedFetch;
+  huggingFaceFetchPatched = true;
+}
+
+patchFetchForHuggingFace();
+
 function readHfGlobal(): any | undefined {
   if (typeof globalThis !== 'undefined' && (globalThis as any).hf) {
     return (globalThis as any).hf;
@@ -31,6 +117,48 @@ async function loadTransformersFromCdn(): Promise<any> {
   env.allowLocalModels = false;
   env.allowRemoteModels = true;
   env.useBrowserCache = true;
+
+  const originalTemplate = typeof env.remoteURLTemplate === 'function' ? env.remoteURLTemplate : null;
+  env.remoteURLTemplate = (...args: any[]) => {
+    let url: string | null = null;
+    if (originalTemplate) {
+      try {
+        url = originalTemplate(...args);
+      } catch (error) {
+        console.warn('remoteURLTemplate threw an error, falling back to default behavior:', error);
+      }
+    }
+
+    if (typeof url !== 'string' || url.length === 0) {
+      const [modelId, fileName, revision] = args;
+      if (typeof modelId === 'string' && typeof fileName === 'string') {
+        const rev = typeof revision === 'string' && revision.length > 0 ? revision : 'main';
+        url = `https://huggingface.co/${modelId}/resolve/${rev}/${fileName}`;
+      }
+    }
+
+    if (typeof url === 'string' && url.includes('huggingface.co')) {
+      try {
+        const parsed = new URL(url);
+        if (!parsed.searchParams.has('download')) {
+          parsed.searchParams.set('download', '1');
+        }
+        return parsed.toString();
+      } catch (error) {
+        console.warn('Failed to append download=1 to remote URL:', error);
+      }
+    }
+
+    if (typeof url === 'string') {
+      return url;
+    }
+
+    return '';
+  };
+
+  if (typeof globalThis.fetch === 'function') {
+    env.fetch = globalThis.fetch.bind(globalThis);
+  }
 
   const existing = readHfGlobal() ?? {};
   const merged = {
@@ -64,6 +192,77 @@ function toOffsets(enc: any): [number, number][] {
 function visWS(s: string) {
   // show whitespace but keep real letters for any script
   return s.replace(/ /g, '␣').replace(/\t/g, '⇥').replace(/\n/g, '⏎');
+}
+
+const ZERO_WIDTH_REGEX = /[\u200B-\u200D\uFEFF]/g;
+
+function stripZeroWidth(text: string): string {
+  return text.replace(ZERO_WIDTH_REGEX, '');
+}
+
+function sanitizeString(text: string): string {
+  const withoutControl = text.replace(/[\u0000-\u001F\u007F-\u009F]/g, '');
+  const normalized = withoutControl.normalize('NFC');
+  return stripZeroWidth(normalized);
+}
+
+function countGraphemes(value: string): number {
+  if (typeof Intl !== 'undefined' && typeof (Intl as any).Segmenter === 'function') {
+    const segmenter = new (Intl as any).Segmenter(undefined, { granularity: 'grapheme' });
+    return [...segmenter.segment(value)].length;
+  }
+  return Array.from(value).length;
+}
+
+function countCodePoints(value: string): number {
+  return Array.from(value).length;
+}
+
+function countUtf8Bytes(value: string): number {
+  if (typeof TextEncoder !== 'undefined') {
+    return new TextEncoder().encode(value).length;
+  }
+  let total = 0;
+  for (const char of value) {
+    const code = char.codePointAt(0) ?? 0;
+    if (code <= 0x7f) total += 1;
+    else if (code <= 0x7ff) total += 2;
+    else if (code <= 0xffff) total += 3;
+    else total += 4;
+  }
+  return total;
+}
+
+function normalizeTokenForStats(token: unknown): string {
+  return String(token ?? '').replace(/[␣⇥⏎]/g, ' ');
+}
+
+function computeTokenLengthSummary(tokens: string[]): { lengths: number[]; sum: number; entropy: number } {
+  if (!tokens.length) {
+    return { lengths: [], sum: 0, entropy: 0 };
+  }
+
+  const lengths = tokens.map((token) => {
+    const clean = normalizeTokenForStats(token);
+    const length = countGraphemes(clean);
+    return Number.isFinite(length) && length >= 0 ? length : 0;
+  });
+
+  const sum = lengths.reduce((acc, value) => acc + value, 0);
+  const histogram = new Map<number, number>();
+  for (const len of lengths) {
+    histogram.set(len, (histogram.get(len) ?? 0) + 1);
+  }
+
+  let entropy = 0;
+  const total = lengths.length;
+  histogram.forEach((count) => {
+    if (count <= 0) return;
+    const probability = count / total;
+    entropy -= probability * Math.log2(probability);
+  });
+
+  return { lengths, sum, entropy };
 }
 
 const BYTE_DECODER: Map<string, number> = (() => {
@@ -126,6 +325,187 @@ function makeReadableToken(
     if (cleaned) return cleaned;
   }
   return '⍰';
+}
+
+async function inferTokenizerVocabSize(tokenizer: any): Promise<number | null> {
+  if (!tokenizer) return null;
+
+  const register = (value: unknown): number | null => {
+    if (typeof value === 'number' && Number.isFinite(value) && value > 0) {
+      return value;
+    }
+    return null;
+  };
+
+  const readNumericProps = (target: any, props: string[]): number | null => {
+    if (!target) return null;
+    for (const prop of props) {
+      try {
+        const resolved = register(target?.[prop]);
+        if (resolved !== null) {
+          return resolved;
+        }
+      } catch (error) {
+        console.warn(`Failed to read numeric property ${prop}:`, error);
+      }
+    }
+    return null;
+  };
+
+  try {
+    if (typeof tokenizer.get_vocab_size === 'function') {
+      const size = await tokenizer.get_vocab_size();
+      const resolved = register(size);
+      if (resolved !== null) {
+        return resolved;
+      }
+    }
+  } catch (error) {
+    console.warn('Failed to read tokenizer.get_vocab_size():', error);
+  }
+
+  try {
+    if (typeof tokenizer.vocab_size === 'number') {
+      const resolved = register(tokenizer.vocab_size);
+      if (resolved !== null) {
+        return resolved;
+      }
+    }
+  } catch (error) {
+    console.warn('Failed to read tokenizer.vocab_size:', error);
+  }
+
+  const maybeObjectCount = (vocab: unknown): number | null => {
+    if (!vocab) return null;
+    if (vocab instanceof Map) {
+      return register(vocab.size);
+    }
+    if (typeof vocab === 'object') {
+      try {
+        const keys = Object.keys(vocab as Record<string, unknown>);
+        return register(keys.length);
+      } catch (error) {
+        console.warn('Failed to derive vocab size from object:', error);
+      }
+    }
+    return null;
+  };
+
+  try {
+    if (typeof tokenizer.get_vocab === 'function') {
+      const vocab = await tokenizer.get_vocab();
+      const resolved = maybeObjectCount(vocab);
+      if (resolved !== null) {
+        return resolved;
+      }
+    }
+  } catch (error) {
+    console.warn('Failed to read tokenizer.get_vocab():', error);
+  }
+
+  try {
+    const resolved = maybeObjectCount(tokenizer.vocab);
+    if (resolved !== null) {
+      return resolved;
+    }
+  } catch (error) {
+    console.warn('Failed to read tokenizer.vocab:', error);
+  }
+
+  try {
+    const resolved = maybeObjectCount(tokenizer?.config?.vocab);
+    if (resolved !== null) {
+      return resolved;
+    }
+    const configSize = register(tokenizer?.config?.vocab_size);
+    if (configSize !== null) {
+      return configSize;
+    }
+  } catch (error) {
+    console.warn('Failed to read tokenizer.config vocab info:', error);
+  }
+
+  try {
+    const modelSize = register(tokenizer?.model?.vocab_size);
+    if (modelSize !== null) {
+      return modelSize;
+    }
+  } catch (error) {
+    console.warn('Failed to read tokenizer.model.vocab_size:', error);
+  }
+
+  const numericTargets: any[] = [
+    tokenizer,
+    tokenizer?.tokenizer,
+    tokenizer?.tokenizer?.model,
+    tokenizer?.processor,
+    tokenizer?.processor?.tokenizer,
+    tokenizer?.processor?.tokenizer?.model,
+    tokenizer?.model,
+    tokenizer?.sp_model,
+    tokenizer?.spModel
+  ];
+
+  const numericProps = ['vocab_size', 'vocabSize', 'vocabularySize', 'size'];
+  for (const target of numericTargets) {
+    const resolved = readNumericProps(target, numericProps);
+    if (resolved !== null) {
+      return resolved;
+    }
+  }
+
+  for (const target of numericTargets) {
+    if (!target) continue;
+    try {
+      if (typeof target.get_vocab_size === 'function') {
+        const size = await target.get_vocab_size();
+        const resolved = register(size);
+        if (resolved !== null) {
+          return resolved;
+        }
+      }
+    } catch (error) {
+      console.warn('Failed to read nested get_vocab_size():', error);
+    }
+
+    try {
+      if (typeof target.get_vocab === 'function') {
+        const nestedVocab = await target.get_vocab();
+        const resolved = maybeObjectCount(nestedVocab);
+        if (resolved !== null) {
+          return resolved;
+        }
+      }
+    } catch (error) {
+      console.warn('Failed to read nested get_vocab():', error);
+    }
+
+    try {
+      if (typeof target.getPieceSize === 'function') {
+        const size = target.getPieceSize();
+        const resolved = register(size);
+        if (resolved !== null) {
+          return resolved;
+        }
+      }
+    } catch (error) {
+      console.warn('Failed to read getPieceSize():', error);
+    }
+  }
+
+  return null;
+}
+
+async function ensureModelVocabSize(model: ModelInfo, tokenizer: any): Promise<number | null> {
+  if (typeof model.vocabSize === 'number' && Number.isFinite(model.vocabSize) && model.vocabSize > 0) {
+    return model.vocabSize;
+  }
+  const inferred = await inferTokenizerVocabSize(tokenizer);
+  if (typeof inferred === 'number' && Number.isFinite(inferred) && inferred > 0) {
+    model.vocabSize = inferred;
+    return inferred;
+  }
+  return model.vocabSize ?? null;
 }
 
 function decodeByteToken(token: string): string {
@@ -248,9 +628,18 @@ async function tokenizeWithTiktokenModel(model: ModelInfo, text: string): Promis
     throw new Error(`Model ${model.id} is missing a tiktoken encoding identifier.`);
   }
   const tokenizer = await getTiktokenEncoding(model.encoding);
-  const normalized = text.normalize('NFKC');
+  const normalized = text.normalize('NFC');
   const encoded = tokenizer.encode(normalized, 'all');
   const ids = Array.from(encoded);
+
+  let vocabSize = typeof model.vocabSize === 'number' ? model.vocabSize : null;
+  if (!vocabSize) {
+    const nVocab = (tokenizer as any)?.n_vocab;
+    if (typeof nVocab === 'number' && Number.isFinite(nVocab) && nVocab > 0) {
+      vocabSize = nVocab;
+      model.vocabSize = nVocab;
+    }
+  }
 
   const tokenBytesList: (Uint8Array | undefined)[] = [];
   const rawPieces = ids.map((id, index) => {
@@ -289,34 +678,42 @@ async function tokenizeWithTiktokenModel(model: ModelInfo, text: string): Promis
     prev = current;
   }
 
-  const segmenter = typeof Intl !== 'undefined' && 'Segmenter' in Intl
-    ? new Intl.Segmenter(undefined, { granularity: 'grapheme' })
-    : null;
-  const graphemes = segmenter
-    ? [...segmenter.segment(normalized)].length
-    : [...normalized].length;
-  const byteCount = new TextEncoder().encode(normalized).length;
+  const graphemeCount = countGraphemes(normalized);
+  const codePointCount = countCodePoints(normalized);
+  const byteCount = countUtf8Bytes(normalized);
   const tokenCount = ids.length;
   const safeDivisor = Math.max(1, tokenCount);
-  const avgTokenChars = displayTokens.reduce((sum, token) => {
-    const cleanTok = String(token ?? '').replace(/[␣⇥⏎]/g, ' ');
-    return sum + [...cleanTok].length;
-  }, 0) / safeDivisor;
+  const { sum: tokenGraphemeSum, entropy: fragEntropy } = computeTokenLengthSummary(displayTokens);
+  const avgTokenGraphemes = tokenGraphemeSum / safeDivisor;
+
+  // UNK Detection for tiktoken models
+  // Tiktoken models generally don't have UNK tokens (they use byte-fallback)
+  // but we should still check the token strings just in case
+  const unkCount = 0;
+  const unkPercentage = 0;
+  const tokensPer100Graphemes = graphemeCount > 0 ? (tokenCount / graphemeCount) * 100 : 0;
+  const tokensPer100CodePoints = codePointCount > 0 ? (tokenCount / codePointCount) * 100 : 0;
 
   return {
     ids,
     tokens: displayTokens,
     tokenStrings: rawPieces,
     offsets: offsets.length === ids.length ? offsets : undefined,
+    vocabSize,
     metrics: {
       tokenCount,
-      charCount: graphemes,
+      graphemeCount,
+      charCount: graphemeCount,
+      codePointCount,
       byteCount,
-      tokensPer100Chars: (tokenCount / Math.max(1, graphemes)) * 100,
+      tokensPer100Chars: tokensPer100Graphemes,
+      tokensPer100Graphemes,
+      tokensPer100CodePoints,
       bytesPerToken: byteCount / safeDivisor,
-      avgTokenLength: avgTokenChars,
-      unkCount: 0,
-      unkPercentage: 0
+      avgTokenLength: avgTokenGraphemes,
+      fragEntropy,
+      unkCount,
+      unkPercentage
     }
   };
 }
@@ -408,7 +805,7 @@ function waitForTransformers(): Promise<any> {
 
 export function sanitizeAndValidateInput(input: unknown): string {
   const rawText = String(input ?? '');
-  const sanitized = rawText.replace(/[\u0000-\u001F\u007F-\u009F]/g, '');
+  const sanitized = sanitizeString(rawText);
   if (!sanitized.trim()) {
     throw new Error('Empty text provided');
   }
@@ -435,13 +832,20 @@ export interface TokenizationResult {
   tokens: string[];
   tokenStrings?: string[]; // model's raw token strings when available (e.g., WordPiece/SentencePiece)
   offsets?: [number, number][]; // start,end character offsets in original text when available
+  vocabSize?: number | null;
+  unkTokenSamples?: { id: number; token: string }[];
   metrics: {
     tokenCount: number;
+    graphemeCount: number;
     charCount: number;
+    codePointCount: number;
     byteCount: number;
     tokensPer100Chars: number;
+    tokensPer100Graphemes: number;
+    tokensPer100CodePoints: number;
     bytesPerToken: number;
     avgTokenLength: number;
+    fragEntropy: number;
     unkCount: number;
     unkPercentage: number;
   };
@@ -596,7 +1000,7 @@ export async function getTokenizerEncodeHandle(repo: string): Promise<TokenizerE
     const tokenizer = await getTiktokenEncoding(model.encoding);
     return {
       implementation,
-      preprocess: (value: string) => value.normalize('NFKC'),
+      preprocess: (value: string) => value.normalize('NFC'),
       encode: (value: string) => tokenizer.encode(value, 'all')
     };
   }
@@ -643,6 +1047,7 @@ export async function tokenizeOnce(repo: string, text: string): Promise<Tokeniza
 
   try {
     const tok = await ensureTransformersTokenizer(model);
+    const resolvedVocabSize = await ensureModelVocabSize(model, tok);
 
     // Try to encode with offsets first, fallback to basic encoding
     let enc: any;
@@ -657,62 +1062,139 @@ export async function tokenizeOnce(repo: string, text: string): Promise<Tokeniza
 
     const ids = toIds(enc);
     const displayTokens = await displayTokensFor(tok, sanitized, ids, enc);
-    let tokenStrings: string[] | undefined = undefined;
+    let tokenStrings: string[] | undefined;
     try {
       if (typeof (tok as any).convert_ids_to_tokens === 'function') {
         tokenStrings = (tok as any).convert_ids_to_tokens(ids);
       }
-    } catch (e) {
-      console.log('convert_ids_to_tokens not available/failed:', e);
+    } catch (error) {
+      console.log('convert_ids_to_tokens not available/failed:', error);
     }
     if (!tokenStrings && Array.isArray((enc as any)?.tokens)) {
       tokenStrings = Array.from((enc as any).tokens);
     }
     const offsets = toOffsets(enc);
 
-    const segmenter = typeof Intl !== 'undefined' && 'Segmenter' in Intl
-      ? new Intl.Segmenter(undefined, { granularity: 'grapheme' })
-      : null;
-    const graphemes = segmenter
-      ? [...segmenter.segment(sanitized)].length
-      : [...sanitized].length;
-    const byteCount = new TextEncoder().encode(sanitized).length;
+    const graphemeCount = countGraphemes(sanitized);
+    const codePointCount = countCodePoints(sanitized);
+    const byteCount = countUtf8Bytes(sanitized);
     const tokenCount = ids.length;
     const safeDivisor = Math.max(1, tokenCount);
-    const avgTokenChars = displayTokens.reduce((sum, token) => {
-      const cleanTok = String(token ?? '').replace(/[␣⇥⏎]/g, ' ');
-      return sum + [...cleanTok].length;
-    }, 0) / safeDivisor;
+    const { sum: tokenGraphemeSum, entropy: fragEntropy } = computeTokenLengthSummary(displayTokens);
+    const avgTokenGraphemes = tokenGraphemeSum / safeDivisor;
+    const tokensPer100Graphemes = graphemeCount > 0 ? (tokenCount / graphemeCount) * 100 : 0;
+    const tokensPer100CodePoints = codePointCount > 0 ? (tokenCount / codePointCount) * 100 : 0;
 
-    const potentialUnkTokens = ['[UNK]', '<unk>', '<UNK>'];
-    const unkIds = new Set<number>();
-    if (typeof (tok as any)?.token_to_id === 'function') {
-      for (const candidate of potentialUnkTokens) {
-        try {
-          const resolved = (tok as any).token_to_id(candidate);
-          if (typeof resolved === 'number' && resolved >= 0) {
-            unkIds.add(resolved);
+    const family = model.family ?? 'Unspecified';
+    const isByteFallbackFamily = family === 'ByteBPE' || family === 'Tiktoken';
+
+    let unkCount = 0;
+    let resolvedUnkIds: number[] = [];
+    let unkSamples: { id: number; token: string }[] | undefined;
+
+    if (!isByteFallbackFamily) {
+      const specialIds = new Set<number>();
+      const registerSpecialId = (value: unknown) => {
+        if (typeof value === 'number' && Number.isFinite(value)) {
+          specialIds.add(value);
+        }
+      };
+
+      const allSpecialIds = (tok as any)?.all_special_ids;
+      if (Array.isArray(allSpecialIds)) {
+        allSpecialIds.forEach(registerSpecialId);
+      }
+
+      const specialTokenProps = ['bos_token_id', 'eos_token_id', 'cls_token_id', 'sep_token_id', 'pad_token_id', 'mask_token_id'] as const;
+      for (const prop of specialTokenProps) {
+        registerSpecialId((tok as any)?.[prop]);
+      }
+
+      const unkIds = new Set<number>();
+      const registerUnkId = (value: unknown) => {
+        if (typeof value === 'number' && Number.isFinite(value) && value >= 0) {
+          unkIds.add(value);
+        }
+      };
+
+      registerUnkId((tok as any)?.unk_token_id);
+
+      if (typeof (tok as any)?.token_to_id === 'function') {
+        const unkCandidates = new Set<string>([
+          (tok as any)?.unk_token,
+          '[UNK]',
+          '<unk>',
+          '<UNK>',
+          '⁇'
+        ].filter((value): value is string => typeof value === 'string' && value.length > 0));
+
+        for (const candidate of unkCandidates) {
+          try {
+            const resolved = (tok as any).token_to_id(candidate);
+            registerUnkId(resolved);
+          } catch {
+            // ignore lookup failures
           }
-        } catch (error) {
-          console.warn('token_to_id lookup failed for', candidate, error);
+        }
+      }
+
+      if (tokenStrings && tokenStrings.length === ids.length) {
+        const unkStringSet = new Set(['[UNK]', '<unk>', '<UNK>', '⁇']);
+        for (let i = 0; i < tokenStrings.length; i += 1) {
+          if (unkStringSet.has(tokenStrings[i])) {
+            registerUnkId(ids[i]);
+          }
+        }
+      }
+
+      const effectiveUnkIds = Array.from(unkIds);
+      if (effectiveUnkIds.length > 0) {
+        resolvedUnkIds = effectiveUnkIds.sort((a, b) => a - b);
+        const effectiveUnkIdSet = new Set(resolvedUnkIds);
+        unkCount = ids.filter((id) => effectiveUnkIdSet.has(id)).length;
+
+        if (unkCount > 0) {
+          const samples: { id: number; token: string }[] = [];
+          for (let i = 0; i < ids.length && samples.length < 10; i += 1) {
+            if (effectiveUnkIdSet.has(ids[i])) {
+              const tokenLabel = tokenStrings?.[i] ?? displayTokens[i] ?? String(ids[i]);
+              samples.push({ id: ids[i], token: tokenLabel });
+            }
+          }
+          if (samples.length) {
+            unkSamples = samples;
+          }
         }
       }
     }
-    const unkCount = unkIds.size > 0 ? ids.filter((id) => unkIds.has(id)).length : 0;
-    const unkPercentage = (unkCount / safeDivisor) * 100;
+
+    const unkPercentage = safeDivisor > 0 ? (unkCount / safeDivisor) * 100 : 0;
+
+    if (unkCount > 0) {
+      console.log(
+        `UNK detected in ${model.id}: ${unkCount} tokens (${unkPercentage.toFixed(2)}%) | IDs: ${resolvedUnkIds.join(', ')}`
+      );
+    }
 
     return {
       ids,
       tokens: displayTokens,
       tokenStrings,
       offsets: offsets.length === ids.length ? offsets : undefined,
+      vocabSize: resolvedVocabSize,
+      unkTokenSamples: unkSamples,
       metrics: {
         tokenCount,
-        charCount: graphemes,
+        graphemeCount,
+        charCount: graphemeCount,
+        codePointCount,
         byteCount,
-        tokensPer100Chars: (tokenCount / Math.max(1, graphemes)) * 100,
+        tokensPer100Chars: tokensPer100Graphemes,
+        tokensPer100Graphemes,
+        tokensPer100CodePoints,
         bytesPerToken: byteCount / safeDivisor,
-        avgTokenLength: avgTokenChars,
+        avgTokenLength: avgTokenGraphemes,
+        fragEntropy,
         unkCount,
         unkPercentage
       }

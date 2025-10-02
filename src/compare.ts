@@ -171,6 +171,7 @@ export interface BatchCsvRow {
   add_special_tokens: boolean
   token_count: number
   tokens_per_100_chars: number
+  tokens_per_100_codepoints: number
   bytes_per_token: number
   avg_token_len_graphemes: number
   unk_count: number
@@ -211,6 +212,7 @@ export const BATCH_CSV_COLUMNS: (keyof BatchCsvRow)[] = [
   'add_special_tokens',
   'token_count',
   'tokens_per_100_chars',
+  'tokens_per_100_codepoints',
   'bytes_per_token',
   'avg_token_len_graphemes',
   'unk_count',
@@ -249,7 +251,7 @@ export async function runBatch(
     const model = MODEL_LOOKUP.get(repo)
     const displayName = getDisplayName(repo)
     const tokenizerFamily = model?.family ?? null
-    const tokenizerVocabSize = typeof model?.vocabSize === 'number' ? model.vocabSize : null
+    let tokenizerVocabSize = typeof model?.vocabSize === 'number' ? model.vocabSize : null
     for (const text of lines) {
       const timingRuns: number[] = []
       let lastResult: TokenizationResult = await tokenizeOnce(repo, text)
@@ -269,15 +271,26 @@ export async function runBatch(
       const medianRounded = Number.isFinite(medianRaw) ? Number(medianRaw.toFixed(3)) : 0
       const madRounded = Number.isFinite(madRaw) ? Number(madRaw.toFixed(3)) : 0
 
+      const resultVocabSize = typeof lastResult.vocabSize === 'number' && Number.isFinite(lastResult.vocabSize)
+        ? lastResult.vocabSize
+        : null
+      const effectiveVocabSize = resultVocabSize ?? tokenizerVocabSize
+      if (model && typeof effectiveVocabSize === 'number' && Number.isFinite(effectiveVocabSize)) {
+        model.vocabSize = effectiveVocabSize
+        tokenizerVocabSize = effectiveVocabSize
+        MODEL_LOOKUP.set(repo, model)
+      }
+
       const rowSlice = sliceOverride ?? tagSlice(text)
       const langTag = inferLanguageTag(rowSlice, text)
       const tokenCount = lastResult.metrics.tokenCount
-      const graphemeCount = lastResult.metrics.charCount
-      const codepointCount = Array.from(text).length
+      const graphemeCount = lastResult.metrics.graphemeCount ?? lastResult.metrics.charCount
+      const codepointCount = lastResult.metrics.codePointCount ?? graphemeCount
       const byteCount = lastResult.metrics.byteCount
       const asciiRatio = Number(computeAsciiByteRatio(text, byteCount).toFixed(6))
-      const tokensPer100 = graphemeCount > 0 ? (tokenCount / Math.max(1, graphemeCount)) * 100 : 0
-      const avgTokenLen = tokenCount > 0 ? graphemeCount / tokenCount : 0
+      const tokensPer100 = lastResult.metrics.tokensPer100Graphemes ?? lastResult.metrics.tokensPer100Chars
+      const tokensPer100Codepoints = lastResult.metrics.tokensPer100CodePoints ?? (codepointCount > 0 ? (tokenCount / codepointCount) * 100 : 0)
+      const avgTokenLen = lastResult.metrics.avgTokenLength ?? (tokenCount > 0 ? graphemeCount / tokenCount : 0)
 
       const unkPercentage = lastResult.metrics.unkPercentage ?? 0
       const derivedUnkCount = (
@@ -295,7 +308,7 @@ export async function runBatch(
       const provenance = getProvenanceInfo(repo, {
         displayName,
         family: tokenizerFamily,
-        vocabSize: tokenizerVocabSize,
+  vocabSize: tokenizerVocabSize,
         addSpecialTokens: BATCH_SETTINGS.add_special_tokens,
         normalization: BATCH_SETTINGS.normalization,
         timingRuns: includeRuns ? timingRunsRounded : undefined
@@ -311,10 +324,11 @@ export async function runBatch(
         byte_count: byteCount,
         tokenizer_id: repo,
         tokenizer_family: tokenizerFamily,
-        tokenizer_vocab_size: tokenizerVocabSize,
+  tokenizer_vocab_size: tokenizerVocabSize,
         add_special_tokens: BATCH_SETTINGS.add_special_tokens,
         token_count: tokenCount,
         tokens_per_100_chars: Number(tokensPer100.toFixed(6)),
+  tokens_per_100_codepoints: Number(tokensPer100Codepoints.toFixed(6)),
         bytes_per_token: Number(lastResult.metrics.bytesPerToken.toFixed(6)),
         avg_token_len_graphemes: Number(avgTokenLen.toFixed(6)),
         unk_count: unkCount,

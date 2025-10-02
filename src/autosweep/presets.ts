@@ -23,22 +23,28 @@ export const AUTOSWEEP_PRESETS: Record<'fast' | 'full', AutoSweepPreset> = {
     id: 'fast',
     label: 'Fast',
     description: 'Quick sweep for exploratory analysis',
-    sampleLines: 10,
+    sampleLines: 60,
     repeats: 3,
-    sweeps: FAST_SWEEP
+    sweeps: FAST_SWEEP,
+    axisSampleLines: {
+      ascii_ratio: 30
+    }
   },
   full: {
     id: 'full',
     label: 'Full',
     description: 'Comprehensive sweep for publication-ready runs',
-    sampleLines: 25,
+    sampleLines: 100,
     repeats: 5,
-    sweeps: FULL_SWEEP
+    sweeps: FULL_SWEEP,
+    axisSampleLines: {
+      ascii_ratio: 30
+    }
   }
 }
 
 export const DEFAULT_BASELINE_SETTINGS = {
-  ascii_ratio: 0,
+  ascii_ratio: -1,
   emoji_count: 0,
   url_on: 0,
   normalize: 'NFC',

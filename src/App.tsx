@@ -379,7 +379,8 @@ export default function App() {
         repeats: request.repeats,
         flushEvery: request.flushEvery,
         seed: request.seed,
-        accessToken: hfToken || undefined
+        accessToken: hfToken || undefined,
+        axisSampleLines: request.axisSampleLines
       }
 
       worker.onmessage = (event: MessageEvent<AutoSweepWorkerMessage>) => {
