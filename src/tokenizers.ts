@@ -9,6 +9,13 @@ export const ANTHROPIC_TOKENIZER_VERSION = '0.0.4';
 export const TIKTOKEN_WASM_URL = wasmUrl;
 const TRANSFORMERS_CDN_URL = `https://cdn.jsdelivr.net/npm/@xenova/transformers@${TRANSFORMERS_JS_VERSION}/dist/transformers.min.js`;
 
+const isDevelopment = typeof import.meta !== 'undefined' && Boolean(import.meta.env?.DEV);
+const debugLog = (...args: unknown[]): void => {
+  if (isDevelopment) {
+    console.debug(...args);
+  }
+};
+
 let transformersLoadPromise: Promise<any> | null = null;
 
 let huggingFaceFetchPatched = false;
@@ -922,10 +929,10 @@ async function getTransformersTokenizer(
   }
 
   const loadPromise = (async () => {
-    console.log(`Loading tokenizer via Transformers.js: ${repo}`);
+    debugLog(`Loading tokenizer via Transformers.js: ${repo}`);
     try {
       const tok = await AutoTokenizer.from_pretrained(repo);
-      console.log(`Tokenizer loaded successfully: ${repo}`);
+      debugLog(`Tokenizer loaded successfully: ${repo}`);
       return tok;
     } catch (error: any) {
       const errorMessage = error?.message ?? String(error);
@@ -961,10 +968,10 @@ async function ensureTransformersTokenizer(model: ModelInfo): Promise<any> {
   const { AutoTokenizer, env } = hf;
 
   const hfToken = readStoredHfToken();
-  console.log(`Using HF token: ${hfToken ? hfToken.slice(0, 10) + '...' : 'none'}`);
+  debugLog(`Using HF token: ${hfToken ? hfToken.slice(0, 10) + '...' : 'none'}`);
   if (hfToken) {
     env.accessToken = hfToken;
-    console.log('Set Transformers.js environment access token');
+    debugLog('Set Transformers.js environment access token');
   }
 
   if (isLikelyGatedRepo(repo) && !gatedRepoPreflightCache.has(repo)) {
@@ -1053,11 +1060,11 @@ export async function tokenizeOnce(repo: string, text: string): Promise<Tokeniza
     let enc: any;
     try {
       enc = tok.encode(sanitized, undefined, { add_special_tokens: false, return_offsets_mapping: true } as any);
-      console.log(`Encoded with offsets:`, enc);
+      debugLog(`Encoded with offsets:`, enc);
     } catch (error) {
-      console.log(`Offsets not supported, using basic encoding:`, error);
+      debugLog(`Offsets not supported, using basic encoding:`, error);
       enc = tok.encode(sanitized, undefined, { add_special_tokens: false } as any);
-      console.log(`Encoded without offsets:`, enc);
+      debugLog(`Encoded without offsets:`, enc);
     }
 
     const ids = toIds(enc);
@@ -1068,7 +1075,7 @@ export async function tokenizeOnce(repo: string, text: string): Promise<Tokeniza
         tokenStrings = (tok as any).convert_ids_to_tokens(ids);
       }
     } catch (error) {
-      console.log('convert_ids_to_tokens not available/failed:', error);
+      debugLog('convert_ids_to_tokens not available/failed:', error);
     }
     if (!tokenStrings && Array.isArray((enc as any)?.tokens)) {
       tokenStrings = Array.from((enc as any).tokens);
@@ -1171,7 +1178,7 @@ export async function tokenizeOnce(repo: string, text: string): Promise<Tokeniza
     const unkPercentage = safeDivisor > 0 ? (unkCount / safeDivisor) * 100 : 0;
 
     if (unkCount > 0) {
-      console.log(
+      console.warn(
         `UNK detected in ${model.id}: ${unkCount} tokens (${unkPercentage.toFixed(2)}%) | IDs: ${resolvedUnkIds.join(', ')}`
       );
     }
