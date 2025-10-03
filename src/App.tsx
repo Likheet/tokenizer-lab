@@ -60,6 +60,15 @@ import {
   type Row,
   type Slice
 } from './compare'
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow
+} from './components/ui/table'
+import { buildTokenizerSignatures, type TokenizerSignature } from './lib/signatures'
 import type { AutoSweepCsvRow, AutoSweepJobConfig, AutoSweepWorkerMessage } from './autosweep/types'
 import { AUTOSWEEP_CSV_HEADER, autoSweepRowToCsv } from './autosweep/csv'
 import type { AutoSweepRunRequest } from './features/autosweep/AutoSweepView'
@@ -164,6 +173,9 @@ export default function App() {
       return ''
     }
   })
+  const [signatures, setSignatures] = useState<TokenizerSignature[]>(() =>
+    buildTokenizerSignatures(AVAILABLE_MODELS)
+  )
   const [showToken, setShowToken] = useState(false)
   const autoWorkerRef = useRef<Worker | null>(null)
   const autoStartRef = useRef<number>(0)
@@ -195,6 +207,19 @@ export default function App() {
   }, [modelLookup])
   const selectedModelInfo = modelLookup[selectedModel]
   const batchSummary = useMemo(() => (batchResults.length ? summarize(batchResults) : []), [batchResults])
+  const aliasingGroups = useMemo(() => {
+    const grouped = new Map<string, TokenizerSignature[]>()
+    for (const signature of signatures) {
+      const bucket = grouped.get(signature.signatureKey) ?? []
+      bucket.push(signature)
+      grouped.set(signature.signatureKey, bucket)
+    }
+    return Array.from(grouped.values()).filter((group) => group.length > 1)
+  }, [signatures])
+  const aliasingIds = useMemo(
+    () => aliasingGroups.flatMap((group) => group.map((entry) => entry.tokenizerId)),
+    [aliasingGroups]
+  )
   const autoSlicePreview = useMemo(() => {
     const lines = batchText
       .split('\n')
@@ -225,6 +250,26 @@ export default function App() {
     const filtered = values.filter((id) => AVAILABLE_MODEL_IDS.has(id))
     setSelectedRepos(filtered)
   }, [])
+
+  const handleCopySignatures = useCallback(() => {
+    const header = ['ID', 'Family', 'Vocab', 'UNK', 'Specials', 'Normalization', 'Source', 'Signature'].join('\t')
+    const rows = signatures.map((signature) =>
+      [
+        signature.tokenizerId,
+        signature.family,
+        signature.vocabSize ?? 'unknown',
+        signature.unkToken,
+        signature.specialTokens.join(', '),
+        signature.normalization,
+        signature.source,
+        signature.signatureKey
+      ].join('\t')
+    )
+    const payload = [header, ...rows].join('\n')
+    if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+      void navigator.clipboard.writeText(payload)
+    }
+  }, [signatures])
 
   const handleSampleInsert = useCallback(
     (language: SampleLanguage, target: Mode, length?: SampleLength) => {
@@ -265,6 +310,10 @@ export default function App() {
       console.warn('Unable to persist HF token:', error)
     }
   }, [hfToken])
+
+  useEffect(() => {
+    setSignatures(buildTokenizerSignatures(AVAILABLE_MODELS))
+  }, [result, compareResults, batchResults, autoRows])
 
   const selectModel = useCallback((modelId: string) => {
     setSelectedModel(modelId)
@@ -490,6 +539,19 @@ export default function App() {
           onSelectModel={selectModel}
           selectedModelInfo={selectedModelInfo}
         />
+        {aliasingGroups.length > 0 ? (
+          <div className="rounded-lg border border-red-500/60 bg-red-100/90 p-4 text-sm text-red-900 shadow">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+              <p className="font-semibold">
+                Tokenizer aliasing detected: [{aliasingIds.join(', ')}]. Two registry entries are resolving to the same tokenizer.
+                Fix registry or loader before trusting results.
+              </p>
+              <Button type="button" size="sm" variant="destructive" onClick={handleCopySignatures}>
+                Copy details
+              </Button>
+            </div>
+          </div>
+        ) : null}
 
         <Card className="bg-card/80 shadow-2xl shadow-primary/10">
           <CardHeader className="pb-4">
@@ -742,6 +804,54 @@ export default function App() {
             ) : null}
           </CardContent>
         </Card>
+        <div className="space-y-4">
+          <div className="flex items-center justify-between">
+            <h2 className="text-2xl font-semibold tracking-tight">Appendix</h2>
+            <Button type="button" variant="outline" size="sm" onClick={handleCopySignatures}>
+              Copy details
+            </Button>
+          </div>
+          <Card className="bg-card/70">
+            <CardHeader className="pb-3">
+              <CardTitle className="text-base">Tokenizer Inventory</CardTitle>
+              <CardDescription>Canonical signature overview for every registered tokenizer.</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <div className="max-h-[360px] overflow-auto rounded-lg border border-border/60">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>ID</TableHead>
+                      <TableHead>Family</TableHead>
+                      <TableHead>Vocab</TableHead>
+                      <TableHead>UNK</TableHead>
+                      <TableHead>Specials</TableHead>
+                      <TableHead>Normalization</TableHead>
+                      <TableHead>Source</TableHead>
+                      <TableHead>Signature</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {signatures.map((signature) => (
+                      <TableRow key={signature.tokenizerId}>
+                        <TableCell className="font-mono text-xs">{signature.tokenizerId}</TableCell>
+                        <TableCell>{signature.family}</TableCell>
+                        <TableCell>{signature.vocabSize ?? 'unknown'}</TableCell>
+                        <TableCell>{signature.unkToken}</TableCell>
+                        <TableCell className="text-xs text-muted-foreground">
+                          {signature.specialTokens.length ? signature.specialTokens.join(', ') : '—'}
+                        </TableCell>
+                        <TableCell>{signature.normalization}</TableCell>
+                        <TableCell>{signature.source}</TableCell>
+                        <TableCell className="font-mono text-xs">{signature.signatureKey}</TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
+            </CardContent>
+          </Card>
+        </div>
       </main>
 
       <footer className="border-t border-border/60 bg-background/60 backdrop-blur mt-16">
